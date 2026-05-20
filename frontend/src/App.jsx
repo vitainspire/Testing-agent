@@ -112,7 +112,7 @@ export default function App() {
               title='Executed'
               value={report.summary.executedTests}
               color='#7c3aed'
-              hint='Intentional test runs: representative patterns + login'
+              hint='Tests that ran to completion: pass + fail + noChange + error (skipped excluded)'
             />
             <MetricCard
               title='Passed'
@@ -124,13 +124,25 @@ export default function App() {
               title='Failed'
               value={report.summary.failedTests}
               color='#dc2626'
-              hint='Test runs that threw an error'
+              hint='Test runs with an application-level failure outcome'
+            />
+            <MetricCard
+              title='No Change'
+              value={report.summary.noChangeTests ?? 0}
+              color='#7c3aed'
+              hint='Test ran and completed — no observable state change detected (valid outcome)'
             />
             <MetricCard
               title='Skipped'
               value={report.summary.skippedTests}
               color='#d97706'
-              hint='Tests attempted but skipped: element not found, cap reached, or no state change'
+              hint='Tests not attempted: cap reached or element not found'
+            />
+            <MetricCard
+              title='Errors'
+              value={report.summary.errorTests ?? 0}
+              color='#b45309'
+              hint='Technical execution failures: timeout, element detached, or infrastructure error'
             />
             <MetricCard
               title='Workflow Patterns'
@@ -150,7 +162,61 @@ export default function App() {
               color='#059669'
               hint='Percentage of executed tests that passed'
             />
+            <MetricCard
+              title='Workflow Coverage'
+              value={`${report.summary.workflowCoverage ?? 0}%`}
+              color='#0891b2'
+              hint='Percentage of detected workflow patterns that produced a passing outcome'
+            />
+            <MetricCard
+              title='Quality Score'
+              value={`${report.summary.executionQualityScore ?? 0}`}
+              color={
+                (report.summary.executionQualityScore ?? 0) >= 80 ? '#16a34a' :
+                (report.summary.executionQualityScore ?? 0) >= 60 ? '#d97706' : '#dc2626'
+              }
+              hint={`Execution quality: ${report.summary.qualityCategory ?? 'Weak'} (assertion rate, coverage, pass rate, error rate)`}
+            />
+            <MetricCard
+              title='Assertions'
+              value={`${report.summary.assertionPassCount ?? 0}/${report.summary.assertionCount ?? 0}`}
+              color='#7c3aed'
+              hint='Business assertions: passed / total'
+            />
+            <MetricCard
+              title='Missing Workflows'
+              value={report.missingWorkflows?.length ?? 0}
+              color='#dc2626'
+              hint='Workflow patterns detected but not successfully executed'
+            />
           </div>
+
+          {/* Coverage & Quality panel — data-driven, never static */}
+          <CoverageQualityPanel
+            summary={report.summary}
+            recommendations={report.recommendations}
+            assertions={report.assertions || []}
+            missingWorkflows={report.missingWorkflows || []}
+          />
+
+          {/* AI QA Risk Analysis */}
+          {report.qaAnalysis && (
+            <QAAnalysisPanel analysis={report.qaAnalysis} />
+          )}
+
+          {/* Assertion Results */}
+          {report.assertions && report.assertions.length > 0 && (
+            <Section title='Business Assertion Results'>
+              <AssertionTable assertions={report.assertions} />
+            </Section>
+          )}
+
+          {/* Navigation Graph */}
+          {report.navigationGraph && report.navigationGraph.nodes.length > 0 && (
+            <Section title='Navigation Graph'>
+              <NavigationGraphPanel graph={report.navigationGraph} />
+            </Section>
+          )}
 
           {/* Workflow Patterns — representative interaction results, the key new section */}
           <Section title='Workflow Patterns'>
@@ -213,6 +279,8 @@ const STATUS_BADGE = {
   pass:           { background: '#dcfce7', color: '#15803d' },
   fail:           { background: '#fee2e2', color: '#b91c1c' },
   noChange:       { background: '#f1f5f9', color: '#64748b' },
+  error:          { background: '#fef3c7', color: '#b45309' },
+  skipped:        { background: '#f3f4f6', color: '#9ca3af' },
   detected:       { background: '#eff6ff', color: '#1d4ed8' },
   representative: { background: '#fdf4ff', color: '#7e22ce' },
 }
@@ -226,6 +294,7 @@ function statusBadgeStyle(status) {
 const CATEGORY_BADGE = {
   // navigation
   'navigation':          { background: '#dbeafe', color: '#1d4ed8' },
+  'hash-navigation':     { background: '#bfdbfe', color: '#1e40af' },
   'title-changed':       { background: '#dbeafe', color: '#1d4ed8' },
   // modals
   'modal-opened':        { background: '#fdf4ff', color: '#7e22ce' },
@@ -253,6 +322,14 @@ const CATEGORY_BADGE = {
   'structure-changed':   { background: '#fef3c7', color: '#92400e' },
   'content-added':       { background: '#d1fae5', color: '#065f46' },
   'content-removed':     { background: '#fff7ed', color: '#c2410c' },
+  // sidebar
+  'sidebar-opened':      { background: '#ecfdf5', color: '#065f46' },
+  'sidebar-closed':      { background: '#f3f4f6', color: '#374151' },
+  // fine-grained UI diff signals
+  'counter-update':      { background: '#fef9c3', color: '#854d0e' },
+  'async-update':        { background: '#e0f2fe', color: '#0369a1' },
+  'state-change':        { background: '#d1fae5', color: '#065f46' },
+  'content-update':      { background: '#fdf4ff', color: '#7e22ce' },
   // boundary enforcement
   'external-blocked':    { background: '#fee2e2', color: '#b91c1c' },
   // fallbacks
@@ -538,6 +615,8 @@ function ExecutionTable({ checks = [] }) {
             <th style={thStyle}>Category</th>
             <th style={thStyle}>Status</th>
             <th style={thStyle}>Outcome</th>
+            <th style={{ ...thStyle, textAlign: 'right' }}>ms</th>
+            <th style={{ ...thStyle, textAlign: 'center' }}>Retries</th>
           </tr>
         </thead>
         <tbody>
@@ -611,6 +690,22 @@ function ExecutionTable({ checks = [] }) {
                   </span>
                 </td>
                 <td style={{ ...tdStyle, color: '#475569' }}>{check.outcome}</td>
+                <td style={{ ...tdStyle, textAlign: 'right', color: '#94a3b8', fontFamily: 'monospace', fontSize: '11px', whiteSpace: 'nowrap' }}>
+                  {check.durationMs != null ? check.durationMs : '—'}
+                </td>
+                <td style={{ ...tdStyle, textAlign: 'center' }}>
+                  {check.retryCount > 0 ? (
+                    <span style={{
+                      background: '#fef3c7', color: '#b45309',
+                      padding: '1px 7px', borderRadius: '999px',
+                      fontSize: '11px', fontWeight: '700'
+                    }}>
+                      {check.retryCount}
+                    </span>
+                  ) : (
+                    <span style={{ color: '#d1d5db', fontSize: '11px' }}>—</span>
+                  )}
+                </td>
               </tr>
             )
           })}
@@ -834,7 +929,20 @@ const TAG_BADGE = {
   LLM:      { background: '#fdf4ff', color: '#7e22ce' },
   CLASSIFY: { background: '#d1fae5', color: '#065f46' },
   CONF:     { background: '#fef9c3', color: '#854d0e' },
-  DONE:     { background: '#1e293b', color: '#f8fafc' },
+  DONE:      { background: '#1e293b', color: '#f8fafc' },
+  RETRY:     { background: '#fef3c7', color: '#b45309' },
+  RECOVER:   { background: '#fff7ed', color: '#c2410c' },
+  'STATE-DIFF': { background: '#e0f2fe', color: '#0369a1' },
+  EXECUTION: { background: '#fdf4ff', color: '#7e22ce' },
+  METRICS:   { background: '#f0fdf4', color: '#15803d' },
+  EXPLORE:   { background: '#ede9fe', color: '#5b21b6' },
+  PLAN:      { background: '#fef9c3', color: '#854d0e' },
+  WFEXEC:    { background: '#d1fae5', color: '#065f46' },
+  ASSERT:    { background: '#fee2e2', color: '#b91c1c' },
+  QUALITY:   { background: '#f0fdf4', color: '#15803d' },
+  MEMORY:    { background: '#f3f4f6', color: '#64748b' },
+  GRAPH:     { background: '#dbeafe', color: '#1d4ed8' },
+  CART:      { background: '#fff7ed', color: '#c2410c' },
 }
 
 /**
@@ -1105,6 +1213,326 @@ function VisualAnalysisSection({ analysis }) {
             </div>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Coverage & Quality panel — shows a visual breakdown of execution outcomes
+ * and renders deterministic recommendations as actionable items.
+ */
+function CoverageQualityPanel({ summary = {}, recommendations = [], assertions = [], missingWorkflows = [] }) {
+  const {
+    executedTests         = 0,
+    passedTests           = 0,
+    failedTests           = 0,
+    noChangeTests         = 0,
+    errorTests            = 0,
+    workflowCoverage      = 0,
+    executionAccuracy     = 0,
+    executionQualityScore = 0,
+    qualityCategory       = 'Weak',
+  } = summary
+
+  const coverageColor = workflowCoverage >= 80 ? '#16a34a' : workflowCoverage >= 50 ? '#d97706' : '#dc2626'
+  const accuracyColor = executionAccuracy >= 80 ? '#16a34a' : executionAccuracy >= 50 ? '#d97706' : '#dc2626'
+
+  const bars = [
+    { label: 'Passed',    value: passedTests,   total: executedTests, color: '#16a34a' },
+    { label: 'Failed',    value: failedTests,   total: executedTests, color: '#dc2626' },
+    { label: 'No Change', value: noChangeTests, total: executedTests, color: '#94a3b8' },
+    { label: 'Errors',    value: errorTests,    total: executedTests, color: '#d97706' },
+  ]
+
+  return (
+    <div style={{
+      background: '#fff', borderRadius: '16px', padding: '24px',
+      marginBottom: '20px', boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
+    }}>
+      <h2 style={{ marginTop: 0, marginBottom: '20px', fontSize: '18px', color: '#1e293b' }}>
+        Coverage &amp; Quality
+      </h2>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '24px' }}>
+
+        {/* Outcome breakdown bars */}
+        <div>
+          <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>
+            Execution Breakdown
+          </div>
+          {executedTests === 0 ? (
+            <p style={{ color: '#94a3b8', margin: 0, fontSize: '13px' }}>No tests executed yet.</p>
+          ) : (
+            bars.map(({ label, value, total, color }) => {
+              const pct = total > 0 ? Math.round((value / total) * 100) : 0
+              return (
+                <div key={label} style={{ marginBottom: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#475569', marginBottom: '3px' }}>
+                    <span>{label}</span>
+                    <span style={{ fontWeight: '600' }}>{value} <span style={{ color: '#94a3b8', fontWeight: '400' }}>({pct}%)</span></span>
+                  </div>
+                  <div style={{ height: '6px', background: '#f1f5f9', borderRadius: '999px', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: '999px', transition: 'width 0.6s ease' }} />
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </div>
+
+        {/* Coverage gauges */}
+        <div>
+          <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>
+            Quality Scores
+          </div>
+          {[
+            { label: 'Workflow Coverage', pct: workflowCoverage, color: coverageColor, hint: 'Patterns with a passing outcome / total patterns' },
+            { label: 'Execution Accuracy', pct: executionAccuracy, color: accuracyColor, hint: 'Passed / executed tests' },
+          ].map(({ label, pct, color, hint }) => (
+            <div key={label} title={hint} style={{ marginBottom: '14px', cursor: 'help' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#475569', marginBottom: '4px' }}>
+                <span>{label}</span>
+                <span style={{ fontSize: '16px', fontWeight: '700', color }}>{pct}%</span>
+              </div>
+              <div style={{ height: '8px', background: '#f1f5f9', borderRadius: '999px', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: '999px', transition: 'width 0.7s ease' }} />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Missing Workflows */}
+        {missingWorkflows.length > 0 && (
+          <div>
+            <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>
+              Missing Workflows ({missingWorkflows.length})
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              {missingWorkflows.map((w, i) => (
+                <span key={i} style={{
+                  background: '#fee2e2', color: '#b91c1c',
+                  padding: '3px 10px', borderRadius: '999px',
+                  fontSize: '11px', fontWeight: '600',
+                }}>
+                  {w}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Quality Score detail */}
+        <div>
+          <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>
+            Quality Score: {executionQualityScore}/100 — {qualityCategory}
+          </div>
+          <div style={{ height: '10px', background: '#f1f5f9', borderRadius: '999px', overflow: 'hidden', marginBottom: '8px' }}>
+            <div style={{
+              height: '100%',
+              width: `${executionQualityScore}%`,
+              background: executionQualityScore >= 80 ? '#16a34a' : executionQualityScore >= 60 ? '#d97706' : '#dc2626',
+              borderRadius: '999px',
+              transition: 'width 0.7s ease',
+            }} />
+          </div>
+          <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+            {assertions.length > 0
+              ? `${assertions.filter(a => a.passed).length}/${assertions.length} business assertions passed`
+              : 'No business assertions recorded'}
+          </div>
+        </div>
+
+        {/* Recommendations */}
+        {recommendations.length > 0 && (
+          <div style={{ gridColumn: '1 / -1' }}>
+            <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>
+              Recommendations
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {recommendations.map((r, i) => (
+                <div key={i} style={{
+                  background: '#f8fafc', borderRadius: '8px', padding: '10px 14px',
+                  fontSize: '13px', color: '#334155', borderLeft: '3px solid #2563eb',
+                  lineHeight: 1.5,
+                }}>
+                  {r}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+      </div>
+    </div>
+  )
+}
+
+const SEVERITY_BADGE = {
+  low:      { background: '#f1f5f9', color: '#64748b' },
+  medium:   { background: '#fef9c3', color: '#854d0e' },
+  high:     { background: '#fff7ed', color: '#c2410c' },
+  critical: { background: '#fee2e2', color: '#b91c1c' },
+}
+
+function AssertionTable({ assertions = [] }) {
+  if (assertions.length === 0) {
+    return <p style={{ color: '#94a3b8', margin: 0 }}>No business assertions were recorded.</p>
+  }
+
+  const thStyle = {
+    textAlign: 'left', padding: '10px 14px', background: '#f8fafc',
+    borderBottom: '2px solid #e2e8f0', fontSize: '11px', color: '#64748b',
+    textTransform: 'uppercase', letterSpacing: '0.06em', whiteSpace: 'nowrap',
+  }
+  const tdStyle = {
+    padding: '10px 14px', borderBottom: '1px solid #f1f5f9',
+    fontSize: '13px', verticalAlign: 'top',
+  }
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Result</th>
+            <th style={thStyle}>Severity</th>
+            <th style={thStyle}>Assertion</th>
+            <th style={thStyle}>Expected</th>
+            <th style={thStyle}>Actual</th>
+          </tr>
+        </thead>
+        <tbody>
+          {assertions.map((a, i) => (
+            <tr key={i} style={{ background: a.passed ? '#f0fdf4' : '#fff5f5' }}>
+              <td style={tdStyle}>
+                <span style={{
+                  background: a.passed ? '#dcfce7' : '#fee2e2',
+                  color:      a.passed ? '#15803d' : '#b91c1c',
+                  padding: '2px 8px', borderRadius: '999px',
+                  fontSize: '11px', fontWeight: '700',
+                }}>
+                  {a.passed ? 'PASS' : 'FAIL'}
+                </span>
+              </td>
+              <td style={tdStyle}>
+                <span style={{
+                  ...(SEVERITY_BADGE[a.severity] || SEVERITY_BADGE.low),
+                  padding: '2px 8px', borderRadius: '999px',
+                  fontSize: '11px', fontWeight: '600',
+                }}>
+                  {a.severity}
+                </span>
+              </td>
+              <td style={{ ...tdStyle, fontWeight: '600', color: '#1e293b' }}>{a.assertion}</td>
+              <td style={{ ...tdStyle, color: '#475569', fontSize: '12px' }}>{a.expected}</td>
+              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '11px', color: '#64748b', maxWidth: '220px', wordBreak: 'break-all' }}>{a.actual}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function QAAnalysisPanel({ analysis }) {
+  if (!analysis) return null
+  const sections = [
+    { key: 'workflowGaps',           label: 'Workflow Gaps',              color: '#dc2626', bg: '#fee2e2' },
+    { key: 'untestedCriticalFlows',  label: 'Untested Critical Flows',    color: '#b45309', bg: '#fef3c7' },
+    { key: 'flakyInteractions',      label: 'Flaky Interactions',         color: '#7e22ce', bg: '#fdf4ff' },
+    { key: 'uxConcerns',             label: 'UX Concerns',                color: '#0369a1', bg: '#e0f2fe' },
+    { key: 'accessibilityConcerns',  label: 'Accessibility Concerns',     color: '#065f46', bg: '#dcfce7' },
+    { key: 'performanceConcerns',    label: 'Performance Concerns',       color: '#6d28d9', bg: '#ede9fe' },
+  ]
+
+  return (
+    <div style={{
+      background: '#fff', borderRadius: '16px', padding: '24px',
+      marginBottom: '20px', boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+        <h2 style={{ margin: 0, fontSize: '18px', color: '#1e293b' }}>AI QA Risk Analysis</h2>
+        <span style={{
+          background: analysis.analysedBy === 'llm' ? '#d1fae5' : '#f1f5f9',
+          color:      analysis.analysedBy === 'llm' ? '#065f46' : '#64748b',
+          padding: '3px 10px', borderRadius: '999px', fontSize: '11px', fontWeight: '600',
+        }}>
+          {analysis.analysedBy === 'llm' ? 'Gemini AI' : 'Deterministic'}
+        </span>
+      </div>
+
+      {analysis.businessRiskSummary && (
+        <div style={{
+          background: '#f8fafc', borderRadius: '10px', padding: '14px 16px',
+          marginBottom: '20px', fontSize: '14px', color: '#334155', lineHeight: 1.6,
+          borderLeft: '4px solid #2563eb',
+        }}>
+          {analysis.businessRiskSummary}
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
+        {sections.map(({ key, label, color, bg }) => {
+          const items = analysis[key] || []
+          if (items.length === 0) return null
+          return (
+            <div key={key} style={{ background: bg, borderRadius: '10px', padding: '14px 16px' }}>
+              <div style={{ fontSize: '11px', fontWeight: '700', color, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '10px' }}>
+                {label} ({items.length})
+              </div>
+              <ul style={{ margin: 0, paddingLeft: '16px' }}>
+                {items.map((item, i) => (
+                  <li key={i} style={{ fontSize: '12px', color, marginBottom: '4px', lineHeight: 1.5 }}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function NavigationGraphPanel({ graph }) {
+  if (!graph || graph.nodes.length === 0) return null
+
+  const passedUrls = new Set(
+    graph.edges.filter(e => e.status === 'pass').map(e => e.to)
+  )
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', padding: '8px 0' }}>
+        {graph.nodes.map((node, i) => {
+          const outgoing = graph.edges.filter(e => e.from === node.id)
+          const isPassed = passedUrls.has(node.id)
+          return (
+            <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+              <div style={{
+                background: isPassed ? '#dcfce7' : '#f1f5f9',
+                border: `2px solid ${isPassed ? '#16a34a' : '#cbd5e1'}`,
+                borderRadius: '10px', padding: '8px 14px',
+                fontSize: '12px', fontWeight: '600',
+                color: isPassed ? '#15803d' : '#475569',
+                whiteSpace: 'nowrap', maxWidth: '160px', overflow: 'hidden',
+                textOverflow: 'ellipsis', textAlign: 'center',
+              }}
+              title={node.url}
+              >
+                {node.label}
+              </div>
+              {outgoing.length > 0 && (
+                <div style={{ fontSize: '10px', color: '#94a3b8', textAlign: 'center' }}>
+                  → {outgoing.length} link{outgoing.length !== 1 ? 's' : ''}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <div style={{ marginTop: '8px', fontSize: '11px', color: '#94a3b8' }}>
+        {graph.nodes.length} pages · {graph.edges.length} transitions · green = passed
       </div>
     </div>
   )

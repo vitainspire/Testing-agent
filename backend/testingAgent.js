@@ -684,14 +684,16 @@ async function detectWorkflowEntryPoints(page, baseOrigin, log) {
 function mergeReports(sessionReports, sharedCrawlLog) {
   const merged = {
     summary: {
-      pages:            0,
-      detectedTestCases:0,
-      executed:         0,
-      passed:           0,
-      failed:           0,
-      skipped:          0,
-      workflowPatterns: 0,
-      sessions:         sessionReports.length,
+      pages:             0,
+      detectedTests:     0,
+      executedTests:     0,
+      passedTests:       0,
+      failedTests:       0,
+      skippedTests:      0,
+      workflowPatterns:  0,
+      crawlInteractions: 0,
+      executionAccuracy: 0,
+      sessions:          sessionReports.length,
     },
     detectedTestCases: [],
     executedChecks:    [],
@@ -719,8 +721,8 @@ function mergeReports(sessionReports, sharedCrawlLog) {
       summary:          r.summary,
       pagesVisited:     Object.keys(r.components || {}).length,
       workflowPatterns: (r.workflowPatterns || []).map(w => w.pattern).slice(0, 10),
-      detectedTests:    (r.detectedTestCases || []).length,
-      executedChecks:   (r.executedChecks    || []).length,
+      detectedTests:  (r.detectedTestCases || []).length,
+      executedTests:  r.summary?.executedTests ?? 0,
     })),
   }
 
@@ -735,16 +737,22 @@ function mergeReports(sessionReports, sharedCrawlLog) {
     merged.recommendations.push(...sub.recommendations)
 
     merged.summary.pages             += sub.summary.pages
-    merged.summary.detectedTestCases += sub.summary.detectedTestCases
-    merged.summary.executed          += sub.summary.executed
-    merged.summary.passed            += sub.summary.passed
-    merged.summary.failed            += sub.summary.failed
-    merged.summary.skipped           += sub.summary.skipped
+    merged.summary.detectedTests     += sub.summary.detectedTests
+    merged.summary.executedTests     += sub.summary.executedTests
+    merged.summary.passedTests       += sub.summary.passedTests
+    merged.summary.failedTests       += sub.summary.failedTests
+    merged.summary.skippedTests      += sub.summary.skippedTests
     merged.summary.workflowPatterns  += sub.summary.workflowPatterns
+    merged.summary.crawlInteractions += sub.summary.crawlInteractions
   }
 
   // Deduplicate recommendations
   merged.recommendations = [...new Set(merged.recommendations)]
+
+  // Recompute accuracy from merged totals (not a simple sum across sessions)
+  merged.summary.executionAccuracy = merged.summary.executedTests > 0
+    ? Math.round((merged.summary.passedTests / merged.summary.executedTests) * 100)
+    : 0
 
   return merged
 }
@@ -765,12 +773,14 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
   const report = {
     summary: {
       pages:             0,
-      detectedTestCases: 0,
-      executed:          0,
-      passed:            0,
-      failed:            0,
-      skipped:           0,
+      detectedTests:     0,
+      executedTests:     0,
+      passedTests:       0,
+      failedTests:       0,
+      skippedTests:      0,
       workflowPatterns:  0,
+      crawlInteractions: 0,
+      executionAccuracy: 0,
     },
     detectedTestCases: [],
     executedChecks:    [],
@@ -792,6 +802,10 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
   const visited             = new Set()
   const interacted          = new Set()
   const exploredUrlPatterns = new Set()
+
+  // Execution accounting — only Phase B (representative) and login are test runs.
+  // Phase C general clicks are crawler interactions and must not inflate executedTests.
+  const tracker = { testRuns: [], crawlActions: 0 }
 
   // -----------------------------------------------------------------
   async function explore(currentPage, depth = 0) {
@@ -913,6 +927,12 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
       } catch (err) {
         loginCheck.outcome = (err.message || 'login interaction failed').split('\n')[0].slice(0, 120)
       }
+      tracker.testRuns.push({
+        status:  loginCheck.status === 'pass' ? 'pass' : 'fail',
+        pattern: 'login',
+        page:    currentUrl,
+        outcome: loginCheck.outcome,
+      })
       report.executedChecks.push(loginCheck)
       log.login(depth, `${loginCheck.status}  ${loginCheck.outcome}`)
     }
@@ -977,6 +997,7 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
         log.limit(depth,
           `cap reached — cannot execute representative for "${pattern.label}"`
         )
+        tracker.testRuns.push({ status: 'skip', reason: 'cap-reached', pattern: pattern.label, page: currentUrl })
         continue
       }
 
@@ -989,6 +1010,7 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
         log.select(depth,
           `pattern "${pattern.label}" — no visible element found, skipping representative`
         )
+        tracker.testRuns.push({ status: 'skip', reason: 'element-not-found', pattern: pattern.label, page: currentUrl })
         continue
       }
 
@@ -1037,6 +1059,7 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
         clickCheck.outcome         = message
         log.fail(depth, `${elementId}  ${message}`)
 
+        tracker.testRuns.push({ status: 'fail', reason: 'click-error', pattern: pattern.label, page: currentUrl, outcome: message })
         report.workflowPatterns.push({
           pattern: pattern.label, occurrences: pattern.occurrences,
           page: currentUrl, representativeId: elementId,
@@ -1052,6 +1075,20 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
         currentPage, beforeState, clickCheck, depth, currentUrl,
         log, report, exploredUrlPatterns, explore, baseOrigin
       )
+
+      // Record test run outcome in tracker (Phase B = intentional test execution)
+      {
+        const runStatus = clickCheck.status === 'pass' ? 'pass'
+          : clickCheck.status === 'fail' ? 'fail'
+          : 'skip'  // 'noChange' — ran but no observable effect
+        tracker.testRuns.push({
+          status:  runStatus,
+          pattern: pattern.label,
+          page:    currentUrl,
+          outcome: clickCheck.outcome,
+          ...(runStatus === 'skip' ? { reason: 'no-change' } : {}),
+        })
+      }
 
       // Record workflow pattern result (all statuses — pass, noChange, fail)
       report.workflowPatterns.push({
@@ -1121,6 +1158,7 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
 
         interacted.add(interactionKey)
         interactionCount++
+        tracker.crawlActions++  // Phase C: crawler interaction, not a test execution
       } catch {
         continue  // stale handle
       }
@@ -1165,23 +1203,42 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
   await page.goto(startUrl, { waitUntil: 'networkidle' })
   await explore(page)
 
-  const passed = report.executedChecks.filter(c => c.status === 'pass').length
-  const failed = report.executedChecks.filter(c => c.status === 'fail').length
+  // --- Deterministic execution accounting ---
+  // executedTests = Phase B representative runs + login attempts only.
+  // Phase C crawl clicks are tracked separately in crawlActions.
+  // Invariant: executedTests === passedTests + failedTests + skippedTests
+  const executedTests = tracker.testRuns.length
+  const passedTests   = tracker.testRuns.filter(r => r.status === 'pass').length
+  const failedTests   = tracker.testRuns.filter(r => r.status === 'fail').length
+  const skippedTests  = tracker.testRuns.filter(r => r.status === 'skip').length
 
-  report.summary.pages             = Object.keys(report.components).length
-  report.summary.detectedTestCases = report.detectedTestCases.length
-  report.summary.executed          = report.executedChecks.length
-  report.summary.passed            = passed
-  report.summary.failed            = failed
-  report.summary.skipped           = report.summary.detectedTestCases - report.summary.executed
-  report.summary.workflowPatterns  = report.workflowPatterns.length
+  const detectedTests      = report.detectedTestCases.length
+  const uniquePatternNames = new Set(report.workflowPatterns.map(w => w.pattern))
+  const workflowPatterns   = uniquePatternNames.size
+  const crawlInteractions  = tracker.crawlActions
+  const executionAccuracy  = executedTests > 0
+    ? Math.round((passedTests / executedTests) * 100)
+    : 0
+
+  report.summary = {
+    pages:            Object.keys(report.components).length,
+    detectedTests,
+    executedTests,
+    passedTests,
+    failedTests,
+    skippedTests,
+    workflowPatterns,
+    crawlInteractions,
+    executionAccuracy,
+  }
 
   report.recommendations.push('Improve accessibility validations')
   report.recommendations.push('Optimize slow pages')
 
   log.done(0,
     `session "${sessionName}" complete  pages=${report.summary.pages}  ` +
-    `executed=${report.summary.executed}  passed=${passed}  failed=${failed}`
+    `detected=${detectedTests}  executed=${executedTests}  ` +
+    `passed=${passedTests}  failed=${failedTests}  skipped=${skippedTests}`
   )
 
   // Tag every record with session name AND role so merged reports stay traceable
@@ -1278,7 +1335,7 @@ async function runAgent(url, username, password) {
   const merged = mergeReports(sessionReports, sharedCrawlLog)
   log.merge(0,
     `merged ${sessionReports.length} session(s)  ` +
-    `total pages=${merged.summary.pages}  executed=${merged.summary.executed}`
+    `total pages=${merged.summary.pages}  executed=${merged.summary.executedTests}`
   )
 
   // ---- Step 4: Semantic use-case analysis on the complete merged dataset ----
@@ -1307,10 +1364,33 @@ async function runAgent(url, username, password) {
   console.log('\n[USECASE → API RESPONSE]')
   console.log(JSON.stringify(merged.useCase, null, 2))
 
+  // --- Invariant validation ---
+  // executed must equal passed + failed + skipped across all sessions.
+  // If this throws, there is a bug in the execution accounting logic above.
+  const { executedTests: et, passedTests: pt, failedTests: ft, skippedTests: st } = merged.summary
+  if (et !== pt + ft + st) {
+    throw new Error(
+      `[INVARIANT] Invalid execution accounting: ` +
+      `executed=${et} !== passed=${pt} + failed=${ft} + skipped=${st}`
+    )
+  }
+
+  // --- Observability metrics block ---
+  console.log(
+    `\n[METRICS]\n` +
+    `detected=${merged.summary.detectedTests}\n` +
+    `executed=${merged.summary.executedTests}\n` +
+    `passed=${merged.summary.passedTests}\n` +
+    `failed=${merged.summary.failedTests}\n` +
+    `skipped=${merged.summary.skippedTests}\n` +
+    `crawl-interactions=${merged.summary.crawlInteractions}\n` +
+    `accuracy=${merged.summary.executionAccuracy}%`
+  )
+
   log.done(0,
     `crawl complete  sessions=${sessionReports.length}  pages=${merged.summary.pages}  ` +
-    `executed=${merged.summary.executed}  passed=${merged.summary.passed}  ` +
-    `failed=${merged.summary.failed}  skipped=${merged.summary.skipped}`
+    `detected=${merged.summary.detectedTests}  executed=${merged.summary.executedTests}  ` +
+    `passed=${merged.summary.passedTests}  failed=${merged.summary.failedTests}  skipped=${merged.summary.skippedTests}`
   )
 
   fs.writeFileSync('report.json', JSON.stringify(merged, null, 2))

@@ -104,39 +104,51 @@ export default function App() {
             />
             <MetricCard
               title='Detected Tests'
-              value={report.summary.detectedTestCases}
+              value={report.summary.detectedTests}
               color='#2563eb'
-              hint='Test opportunities found by crawling the DOM'
+              hint='Unique test scenarios discovered by crawling the DOM'
             />
             <MetricCard
               title='Executed'
-              value={report.summary.executed}
+              value={report.summary.executedTests}
               color='#7c3aed'
-              hint='Real Playwright interactions attempted'
+              hint='Intentional test runs: representative patterns + login'
             />
             <MetricCard
               title='Passed'
-              value={report.summary.passed}
+              value={report.summary.passedTests}
               color='#16a34a'
-              hint='Interactions that produced a meaningful state change'
+              hint='Test runs that produced a meaningful state change'
             />
             <MetricCard
               title='Failed'
-              value={report.summary.failed}
+              value={report.summary.failedTests}
               color='#dc2626'
-              hint='Interactions that threw an error'
+              hint='Test runs that threw an error'
             />
             <MetricCard
               title='Skipped'
-              value={report.summary.skipped}
+              value={report.summary.skippedTests}
               color='#d97706'
-              hint='Detected tests that were never attempted'
+              hint='Tests attempted but skipped: element not found, cap reached, or no state change'
             />
             <MetricCard
               title='Workflow Patterns'
               value={report.summary.workflowPatterns}
               color='#0891b2'
-              hint='Representative interactions executed for detected repeated patterns'
+              hint='Unique repeated interaction patterns detected (deduplicated)'
+            />
+            <MetricCard
+              title='Crawl Actions'
+              value={report.summary.crawlInteractions}
+              color='#64748b'
+              hint='General crawler interactions — exploration clicks, not test executions'
+            />
+            <MetricCard
+              title='Accuracy'
+              value={`${report.summary.executionAccuracy ?? 0}%`}
+              color='#059669'
+              hint='Percentage of executed tests that passed'
             />
           </div>
 
@@ -298,9 +310,9 @@ function WorkflowSessionsBar({ sessions = [] }) {
         gap: '12px',
       }}>
         {sessions.map((s, i) => {
-          const passed = s.summary?.passed ?? 0
-          const failed = s.summary?.failed ?? 0
-          const pages  = s.summary?.pages  ?? 0
+          const passed = s.summary?.passedTests ?? 0
+          const failed = s.summary?.failedTests ?? 0
+          const pages  = s.summary?.pages       ?? 0
           const accent = failed > 0 ? '#dc2626' : passed > 0 ? '#16a34a' : '#94a3b8'
           return (
             <div key={i} style={{

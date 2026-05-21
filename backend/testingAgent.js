@@ -66,6 +66,14 @@ const ACTION_SCORE = {
 const SCOPE_MODE = 'domain'
 
 // -------------------------------------------------------------------
+// Stateful UI element pattern — elements whose natural behavior is
+// toggle/open/close, producing pass on first click and noChange on
+// repeat clicks. These are NOT flaky; they are deterministic stateful.
+// -------------------------------------------------------------------
+const STATEFUL_TARGET_PATTERN =
+  /menu|toggle|hamburger|burger|accordion|sidebar|dropdown|nav(?:bar)?|open|close|expand|collapse|tab|drawer|panel|modal|popup|dialog|overlay/i
+
+// -------------------------------------------------------------------
 // Business workflow registry
 // Each app type lists the canonical workflows expected from that class
 // of application. Coverage = completed / expected, NOT executed / detected.
@@ -1289,7 +1297,10 @@ function computeExecutionQualityScore(summary, assertions) {
   factors.push({ name: 'Workflow Coverage', score: covPts, max: 30, pct: workflowCoverage, weight: 0.30 })
 
   // Factor 3: Execution stability (pass rate) — 20 pts
-  const passRate  = passedTests / executedTests
+  // Stateful noChange results (toggle open/close cycles) are deterministic
+  // correct behaviour — they are added back to avoid penalising stability.
+  const adjustedPassed = passedTests + (summary.statefulNoChangeAdjust || 0)
+  const passRate  = adjustedPassed / executedTests
   const passPts   = Math.round(passRate * 20)
   score += passPts
   factors.push({ name: 'Execution Stability', score: passPts, max: 20, pct: Math.round(passRate * 100), weight: 0.20 })
@@ -1436,11 +1447,23 @@ function planWorkflowExecution(workflowGraph, components) {
 // -------------------------------------------------------------------
 // detectFlakyActions
 // Phase 32 — Post-crawl flaky interaction analysis.
-// Inspects executedChecks for instability signals:
-//   - high retry count (≥ 2 retries)
-//   - recovery fallbacks used
-//   - same target element with inconsistent outcomes across calls
-// Returns annotated list of flaky elements.
+//
+// Distinguishes two categories:
+//
+//   stability='stateful'
+//     Element is a toggle/menu/accordion whose natural behavior produces
+//     pass (first click, element was closed) then noChange (repeat click,
+//     already open). Outcomes are ONLY {pass, noChange} — never fail/error.
+//     This is deterministic state-machine behavior, NOT flakiness.
+//     These are returned in the same array but MUST be split by the caller:
+//       report.flakyActions    = results.filter(f => f.stability !== 'stateful')
+//       report.statefulActions = results.filter(f => f.stability === 'stateful')
+//
+//   stability='unstable'|'flaky'|'critical-flaky'
+//     Same action produces genuinely inconsistent outcomes under the same
+//     page conditions (fail+pass, error+pass, high-retry).
+//
+// Returns combined list sorted by retryCount descending.
 // -------------------------------------------------------------------
 function detectFlakyActions(executedChecks) {
   const byTarget = {}
@@ -1450,34 +1473,68 @@ function detectFlakyActions(executedChecks) {
     byTarget[check.target].push(check)
   }
 
-  const flaky = []
+  const results = []
 
   for (const [target, checks] of Object.entries(byTarget)) {
+    if (checks.length < 2) continue  // single occurrence cannot be flaky or stateful
+
+    const maxRetry        = Math.max(...checks.map(c => c.retryCount || 0))
+    const outcomeStatuses = checks.map(c => c.status)
+    const outcomeSet      = new Set(outcomeStatuses)
+    const passCount       = checks.filter(c => c.status === EXECUTION_STATUS.PASS).length
+    const noChangeCount   = checks.filter(c => c.status === EXECUTION_STATUS.NO_CHANGE).length
+    const failCount       = checks.filter(c => c.status === EXECUTION_STATUS.FAIL).length
+    const errorCount      = checks.filter(c => c.status === EXECUTION_STATUS.ERROR).length
+
+    // ---- Stateful toggle detection ----
+    // Criterion: outcomes are ONLY {pass, noChange} (no fail, no error)
+    //            AND the target name or page context looks like a toggle element.
+    if (outcomeSet.size > 1 && failCount === 0 && errorCount === 0) {
+      const hasOnlyPassAndNoChange =
+        [...outcomeSet].every(o => o === EXECUTION_STATUS.PASS || o === EXECUTION_STATUS.NO_CHANGE)
+
+      if (hasOnlyPassAndNoChange && STATEFUL_TARGET_PATTERN.test(target)) {
+        results.push({
+          target,
+          stability:        'stateful',
+          reasons:          ['toggle-state-change: open/closed cycle produces expected pass then noChange'],
+          retryCount:       maxRetry,
+          occurrences:      checks.length,
+          passOccurrences:  passCount,
+          noChangeOccurrences: noChangeCount,
+          pages:            [...new Set(checks.map(c => c.page))],
+          stateTransitions: checks.map(c => ({
+            action:   target,
+            result:   c.status,
+            category: c.outcomeCategory || c.outcome || '',
+          })),
+        })
+        continue
+      }
+    }
+
+    // ---- Genuine flakiness detection ----
     const reasons = []
-
-    const maxRetry = Math.max(...checks.map(c => c.retryCount || 0))
     if (maxRetry >= 2) reasons.push(`high-retry (max=${maxRetry})`)
-
-    const outcomes = new Set(checks.map(c => c.status))
-    if (outcomes.size > 1) reasons.push(`inconsistent-outcomes (${[...outcomes].join(',')})`)
-
-    const errorCount = checks.filter(c => c.status === 'error').length
+    if (outcomeSet.size > 1) reasons.push(`inconsistent-outcomes (${[...outcomeSet].join(',')})`)
     if (errorCount > 0 && checks.length > 1) reasons.push(`intermittent-error (${errorCount}/${checks.length})`)
 
     if (reasons.length > 0) {
       const stability = reasons.length >= 2 ? 'critical-flaky' : maxRetry >= 2 ? 'flaky' : 'unstable'
-      flaky.push({
+      results.push({
         target,
         stability,
         reasons,
-        retryCount: maxRetry,
-        occurrences: checks.length,
-        pages: [...new Set(checks.map(c => c.page))],
+        retryCount:   maxRetry,
+        occurrences:  checks.length,
+        passOccurrences:  passCount,
+        noChangeOccurrences: noChangeCount,
+        pages:        [...new Set(checks.map(c => c.page))],
       })
     }
   }
 
-  return flaky.sort((a, b) => b.retryCount - a.retryCount)
+  return results.sort((a, b) => b.retryCount - a.retryCount)
 }
 
 // -------------------------------------------------------------------
@@ -1889,6 +1946,7 @@ function mergeReports(sessionReports, sharedCrawlLog) {
       completedWorkflowCount: 0,
       expectedWorkflowCount:  0,
       flakyActionCount:       0,
+      statefulActionCount:    0,
       avgRetryCount:          0,
       sessions:               sessionReports.length,
     },
@@ -1909,6 +1967,7 @@ function mergeReports(sessionReports, sharedCrawlLog) {
     workflowGraph:      {},
     navigationGraph:    { nodes: [], edges: [] },
     flakyActions:       [],
+    statefulActions:    [],
     executionPlan:      [],
     qualityFactors:     [],
 
@@ -1957,6 +2016,7 @@ function mergeReports(sessionReports, sharedCrawlLog) {
     merged.summary.assertionPassCount    += sub.summary.assertionPassCount     ?? 0
     merged.summary.completedWorkflowCount += sub.summary.completedWorkflowCount ?? 0
     merged.summary.flakyActionCount      += sub.summary.flakyActionCount       ?? 0
+    merged.summary.statefulActionCount   += sub.summary.statefulActionCount    ?? 0
 
     // Merge arrays
     if (sub.assertions)       merged.assertions.push(...sub.assertions)
@@ -1967,6 +2027,7 @@ function mergeReports(sessionReports, sharedCrawlLog) {
       merged.navigationGraph.edges.push(...sub.navigationGraph.edges)
     }
     if (sub.flakyActions)       merged.flakyActions.push(...sub.flakyActions)
+    if (sub.statefulActions)    merged.statefulActions.push(...sub.statefulActions)
     if (sub.executionPlan)     merged.executionPlan.push(...sub.executionPlan)
     if (sub.qualityFactors)    merged.qualityFactors.push(...sub.qualityFactors)
     if (sub.completedWorkflows) merged.completedWorkflows.push(...sub.completedWorkflows)
@@ -1991,8 +2052,11 @@ function mergeReports(sessionReports, sharedCrawlLog) {
   merged.summary.nonBlockingTests = mergedExecMet.noChangeTests
 
   // Recompute flaky detection and avgRetryCount from merged execution data
-  merged.flakyActions = detectFlakyActions(merged.executedChecks)
-  merged.summary.flakyActionCount = merged.flakyActions.length
+  const mergedFlakyAll           = detectFlakyActions(merged.executedChecks)
+  merged.flakyActions            = mergedFlakyAll.filter(f => f.stability !== 'stateful')
+  merged.statefulActions         = mergedFlakyAll.filter(f => f.stability === 'stateful')
+  merged.summary.flakyActionCount    = merged.flakyActions.length
+  merged.summary.statefulActionCount = merged.statefulActions.length
   merged.summary.avgRetryCount = merged.executedChecks.length > 0
     ? Math.round((merged.executedChecks.reduce((s, c) => s + (c.retryCount || 0), 0) / merged.executedChecks.length) * 100) / 100
     : 0
@@ -2070,6 +2134,7 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
     workflowGraph:      {},
     navigationGraph:    { nodes: [], edges: [] },
     flakyActions:       [],
+    statefulActions:    [],
     executionPlan:      [],
     qualityFactors:     [],
   }
@@ -2839,20 +2904,29 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
   // Phase 19 — navigation graph from URL transitions
   report.navigationGraph = buildNavigationGraph(report.workflows, report.executedChecks)
 
-  // Phase 32 — flaky action detection
-  report.flakyActions   = detectFlakyActions(report.executedChecks)
+  // Phase 32 — flaky action detection (split stateful from genuinely flaky)
+  const allFlakyResults      = detectFlakyActions(report.executedChecks)
+  report.flakyActions        = allFlakyResults.filter(f => f.stability !== 'stateful')
+  report.statefulActions     = allFlakyResults.filter(f => f.stability === 'stateful')
 
   // Phase 23 — goal-driven execution plan
   report.executionPlan  = planWorkflowExecution(report.workflowGraph, report.components)
 
   // Phase 17 — execution quality score (workflowCoverage must be computed first)
+  // Stateful noChange results (toggle open/close cycles) are not failures — add
+  // them back into the adjusted pass count so they don't penalise stability.
+  const statefulNoChangeAdjust = report.statefulActions.reduce((s, a) => s + (a.noChangeOccurrences || 0), 0)
   const avgRetryForQuality = report.executedChecks.length > 0
     ? report.executedChecks.reduce((s, c) => s + (c.retryCount || 0), 0) / report.executedChecks.length
     : 0
-  const tempSummary = { executedTests, passedTests, noChangeTests, errorTests, workflowCoverage, avgRetryCount: avgRetryForQuality }
+  const tempSummary = {
+    executedTests, passedTests, noChangeTests, errorTests,
+    workflowCoverage, avgRetryCount: avgRetryForQuality,
+    statefulNoChangeAdjust,
+  }
   const qualityResult = computeExecutionQualityScore(tempSummary, report.assertions)
   report.qualityFactors = qualityResult.factors || []
-  log.quality(0, `score=${qualityResult.score}  category=${qualityResult.category}  assertions=${report.assertions.length}  flaky=${report.flakyActions.length}`)
+  log.quality(0, `score=${qualityResult.score}  category=${qualityResult.category}  assertions=${report.assertions.length}  flaky=${report.flakyActions.length}  stateful=${report.statefulActions.length}`)
 
   report.summary = {
     pages:                  Object.keys(report.components).length,
@@ -2878,6 +2952,7 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
     assertionCount:         report.assertions.length,
     assertionPassCount:     report.assertions.filter(a => a.passed).length,
     flakyActionCount:       report.flakyActions.length,
+    statefulActionCount:    report.statefulActions.length,
     avgRetryCount:          report.executedChecks.length > 0
       ? Math.round((report.executedChecks.reduce((s, c) => s + (c.retryCount || 0), 0) / report.executedChecks.length) * 100) / 100
       : 0,

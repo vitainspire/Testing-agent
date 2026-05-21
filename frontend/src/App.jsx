@@ -199,7 +199,13 @@ export default function App() {
               title='Flaky Actions'
               value={report.summary.flakyActionCount ?? 0}
               color='#7c3aed'
-              hint='Actions showing inconsistent outcomes or high retry counts'
+              hint='Actions showing genuinely inconsistent outcomes or high retry counts'
+            />
+            <MetricCard
+              title='Stateful Actions'
+              value={report.summary.statefulActionCount ?? 0}
+              color='#0369a1'
+              hint='Toggle/menu actions with expected open/close state cycles — not instability'
             />
             <MetricCard
               title='Missing Workflows'
@@ -247,10 +253,15 @@ export default function App() {
             </Section>
           )}
 
-          {/* Flaky Actions */}
-          {report.flakyActions && report.flakyActions.length > 0 && (
-            <Section title='Flaky Actions'>
-              <FlakyActionsPanel actions={report.flakyActions} />
+          {/* Flaky Actions — genuinely inconsistent outcomes only */}
+          <Section title='Flaky Actions'>
+            <FlakyActionsPanel actions={report.flakyActions || []} />
+          </Section>
+
+          {/* Stateful Actions — deterministic toggle/menu behavior, not instability */}
+          {report.statefulActions && report.statefulActions.length > 0 && (
+            <Section title='Stateful UI Actions'>
+              <StatefulActionsPanel actions={report.statefulActions} />
             </Section>
           )}
 
@@ -1687,6 +1698,7 @@ function BusinessWorkflowsPanel({ completed = [], missing = [], expected = [], c
 
 const STABILITY_BADGE = {
   'stable':         { background: '#dcfce7', color: '#15803d' },
+  'stateful':       { background: '#e0f2fe', color: '#0369a1' },
   'unstable':       { background: '#fef9c3', color: '#854d0e' },
   'flaky':          { background: '#fff7ed', color: '#c2410c' },
   'critical-flaky': { background: '#fee2e2', color: '#b91c1c' },
@@ -1747,6 +1759,67 @@ function FlakyActionsPanel({ actions = [] }) {
           })}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function StatefulActionsPanel({ actions = [] }) {
+  if (actions.length === 0) return null
+
+  const thStyle = {
+    textAlign: 'left', padding: '10px 14px', background: '#f0f9ff',
+    borderBottom: '2px solid #bae6fd', fontSize: '11px', color: '#0369a1',
+    textTransform: 'uppercase', letterSpacing: '0.06em', whiteSpace: 'nowrap',
+  }
+  const tdStyle = { padding: '10px 14px', borderBottom: '1px solid #f0f9ff', fontSize: '13px', verticalAlign: 'top' }
+
+  return (
+    <div>
+      <p style={{ margin: '0 0 12px', fontSize: '13px', color: '#0369a1', background: '#e0f2fe', padding: '10px 14px', borderRadius: '8px', borderLeft: '4px solid #0ea5e9' }}>
+        These actions show different outcomes depending on UI state (e.g. open vs closed). This is expected toggle behavior — not instability.
+      </p>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={thStyle}>Target</th>
+              <th style={thStyle}>Classification</th>
+              <th style={thStyle}>Pass</th>
+              <th style={thStyle}>NoChange</th>
+              <th style={thStyle}>State Transitions</th>
+              <th style={thStyle}>Pages</th>
+            </tr>
+          </thead>
+          <tbody>
+            {actions.map((a, i) => (
+              <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#f8fbff' }}>
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '12px', color: '#1e293b', maxWidth: '200px', wordBreak: 'break-all' }}>
+                  {a.target}
+                </td>
+                <td style={tdStyle}>
+                  <span style={{ ...STABILITY_BADGE['stateful'], padding: '2px 8px', borderRadius: '999px', fontSize: '11px', fontWeight: '700' }}>
+                    deterministic-stateful
+                  </span>
+                </td>
+                <td style={{ ...tdStyle, textAlign: 'center', color: '#15803d', fontWeight: '700' }}>{a.passOccurrences ?? '—'}</td>
+                <td style={{ ...tdStyle, textAlign: 'center', color: '#0369a1', fontWeight: '700' }}>{a.noChangeOccurrences ?? '—'}</td>
+                <td style={{ ...tdStyle, fontSize: '11px' }}>
+                  {(a.stateTransitions || []).map((t, j) => (
+                    <div key={j} style={{ color: t.result === 'pass' ? '#15803d' : '#0369a1', marginBottom: '2px', fontFamily: 'monospace' }}>
+                      {t.result === 'pass' ? '↑ open' : '· already open'} → {t.result} {t.category ? `(${t.category})` : ''}
+                    </div>
+                  ))}
+                </td>
+                <td style={{ ...tdStyle, fontSize: '11px', color: '#64748b', maxWidth: '160px' }}>
+                  {(a.pages || []).map((p, j) => (
+                    <div key={j} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p}</div>
+                  ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

@@ -1646,7 +1646,11 @@ function BusinessWorkflowsPanel({ completed = [], missing = [], expected = [], c
                 <div>
                   <div style={{ fontWeight: '600', fontSize: '13px', color: '#15803d' }}>{w.label || w}</div>
                   {w.evidence && (
-                    <div style={{ fontSize: '11px', color: '#4ade80', marginTop: '2px' }}>{w.evidence}</div>
+                    Array.isArray(w.evidence)
+                      ? w.evidence.map((line, li) => (
+                          <div key={li} style={{ fontSize: '11px', color: '#4ade80', marginTop: li === 0 ? '2px' : '1px', fontFamily: 'monospace' }}>{line}</div>
+                        ))
+                      : <div style={{ fontSize: '11px', color: '#4ade80', marginTop: '2px' }}>{w.evidence}</div>
                   )}
                 </div>
               </div>

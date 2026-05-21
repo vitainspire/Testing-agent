@@ -1130,7 +1130,7 @@ function detectCompletedWorkflows(report) {
   for (const wf of registry) {
     const proof = checkWorkflowEvidence(wf.id, evidence)
     if (proof) {
-      completed.push({ id: wf.id, label: wf.label, evidence: proof })
+      completed.push({ id: wf.id, label: wf.label, evidence: proof.lines, summary: proof.summary })
     } else {
       missing.push({ id: wf.id, label: wf.label })
     }
@@ -1139,94 +1139,112 @@ function detectCompletedWorkflows(report) {
   return { registry, completed, missing }
 }
 
+// Returns { summary: string, lines: string[] } if evidence found, null otherwise.
+// All cases use single() or multi() helpers for consistency.
 function checkWorkflowEvidence(workflowId, ev) {
-  const { urlVisited, assertMatch, patternMatch, targetMatch, loginSuccess } = ev
+  const { urlVisited, assertMatch, patternMatch, targetMatch, loginSuccess, report } = ev
+
+  const single = (s) => s ? { summary: s, lines: [s] } : null
+  const multi  = (lines) => lines.length > 0 ? { summary: lines[0], lines } : null
 
   switch (workflowId) {
     case 'login':
-      return loginSuccess ? 'successful auth navigation detected' : null
+      return single(loginSuccess ? 'successful auth navigation detected' : null)
 
     case 'browse-products':
-      return urlVisited(/inventory|products?|catalog|shop|listing|items/)
-        ? 'catalog/inventory page visited'
-        : (patternMatch(/browse|product|catalog|listing/) ? 'product listing pattern passed' : null)
+      if (urlVisited(/inventory|products?|catalog|shop|listing|items/)) return single('catalog/inventory page visited')
+      if (patternMatch(/browse|product|catalog|listing/)) return single('product listing pattern passed')
+      return null
 
     case 'view-product-detail':
-      return urlVisited(/inventory[_-]item|product[_/]detail|[?&]id=|\/item\/|\/product\//)
-        ? 'product detail page visited'
-        : (patternMatch(/product.detail|item.detail|view.product/) ? 'detail pattern passed' : null)
+      if (urlVisited(/inventory[_-]item|product[_/]detail|[?&]id=|\/item\/|\/product\//)) return single('product detail page visited')
+      if (patternMatch(/product.detail|item.detail|view.product/)) return single('detail pattern passed')
+      return null
 
     case 'add-to-cart':
-      return assertMatch(/add.to.cart|add.cart|cart.add/)
-        || patternMatch(/add.to.cart|add.cart|add.basket/)
-        || targetMatch(/add.to.cart|add.cart|add.basket/)
-        ? 'cart increment / add-to-cart action passed'
-        : null
+      if (assertMatch(/add.to.cart|add.cart|cart.add/) || patternMatch(/add.to.cart|add.cart|add.basket/) || targetMatch(/add.to.cart|add.cart|add.basket/))
+        return single('cart increment / add-to-cart action passed')
+      return null
 
     case 'view-cart':
-      return urlVisited(/\/cart|\/basket|\/bag|\/checkout/)
-        ? 'cart page visited'
-        : (patternMatch(/view.cart|open.cart|cart.page/) ? 'cart view pattern passed' : null)
+      if (urlVisited(/\/cart|\/basket|\/bag|\/checkout/)) return single('cart page visited')
+      if (patternMatch(/view.cart|open.cart|cart.page/)) return single('cart view pattern passed')
+      return null
 
     case 'remove-from-cart':
-      return assertMatch(/remove.from.cart|remove.cart|cart.remove/)
-        || (patternMatch(/remove/) && urlVisited(/cart|basket/))
-        || targetMatch(/remove.from.cart|remove.item|btn_remove/)
-        ? 'remove-from-cart action passed'
-        : null
+      if (assertMatch(/remove.from.cart|remove.cart|cart.remove/) || (patternMatch(/remove/) && urlVisited(/cart|basket/)) || targetMatch(/remove.from.cart|remove.item|btn_remove/))
+        return single('remove-from-cart action passed')
+      return null
 
     case 'checkout':
-      return urlVisited(/checkout|payment|place.?order|order.confirm|purchase/)
-        ? 'checkout page reached'
-        : (assertMatch(/checkout|place.order/) ? 'checkout assertion passed' : null)
+      if (urlVisited(/checkout|payment|place.?order|order.confirm|purchase/)) return single('checkout page reached')
+      if (assertMatch(/checkout|place.order/)) return single('checkout assertion passed')
+      return null
 
     case 'logout':
-      return assertMatch(/logout|sign.out|log.out/)
-        || patternMatch(/logout|sign.?out/)
-        || targetMatch(/logout|sign.?out|btn.?logout/)
-        ? 'logout action executed successfully'
-        : null
+      if (assertMatch(/logout|sign.out|log.out/) || patternMatch(/logout|sign.?out/) || targetMatch(/logout|sign.?out|btn.?logout/))
+        return single('logout action executed successfully')
+      return null
 
     // CRM / Dashboard workflows
     case 'view-records':
-      return urlVisited(/records?|list|table|data|entries/)
-        ? 'records page visited' : null
+      return single(urlVisited(/records?|list|table|data|entries/) ? 'records page visited' : null)
 
     case 'create-record':
-      return patternMatch(/create|new|add.record|submit/) || assertMatch(/create|add.record/)
-        ? 'record creation passed' : null
+      return single(patternMatch(/create|new|add.record|submit/) || assertMatch(/create|add.record/) ? 'record creation passed' : null)
 
     case 'edit-record':
-      return patternMatch(/edit|update|modify/) || assertMatch(/edit|update/)
-        ? 'record edit passed' : null
+      return single(patternMatch(/edit|update|modify/) || assertMatch(/edit|update/) ? 'record edit passed' : null)
 
     case 'filter-search':
-      return patternMatch(/filter|search|sort/) || assertMatch(/filter|search/)
-        ? 'filter/search action passed' : null
+      return single(patternMatch(/filter|search|sort/) || assertMatch(/filter|search/) ? 'filter/search action passed' : null)
 
     case 'view-dashboard':
-      return urlVisited(/dashboard|home|overview|summary/)
-        ? 'dashboard page visited' : null
+      return single(urlVisited(/dashboard|home|overview|summary/) ? 'dashboard page visited' : null)
 
     case 'navigate-sections':
-      return (ev.report.workflows || []).length >= 2
-        ? 'multi-page navigation confirmed' : null
+      return single((ev.report.workflows || []).length >= 2 ? 'multi-page navigation confirmed' : null)
 
     case 'filter-data':
-      return patternMatch(/filter|sort|search/) ? 'filter action passed' : null
+      return single(patternMatch(/filter|sort|search/) ? 'filter action passed' : null)
 
     // Generic
     case 'navigate':
-      return (ev.report.workflows || []).length >= 1
-        ? 'page navigation detected' : null
+      return single((report.workflows || []).length >= 1 ? 'page navigation detected' : null)
 
     case 'interact':
-      return ev.report.executedChecks.some(c => c.status === EXECUTION_STATUS.PASS)
-        ? 'UI interaction passed' : null
+      return single(report.executedChecks.some(c => c.status === EXECUTION_STATUS.PASS) ? 'UI interaction passed' : null)
 
-    case 'form-submit':
-      return patternMatch(/submit|save|send/) || assertMatch(/form.submit|submit/)
-        ? 'form submission passed' : null
+    case 'form-submit': {
+      const lines = []
+
+      // A successful login IS a form submission — authentication forms count
+      if (loginSuccess) {
+        const lc = report.executedChecks.find(c => c.type === 'login' && c.status === EXECUTION_STATUS.PASS)
+        if (lc) {
+          lines.push(`LOGIN ${lc.status} ${lc.outcome || 'login form submitted successfully'}`)
+          lines.push(`EXECUTION status=${lc.status} target=${lc.target || 'login form'} category=${lc.outcomeCategory || 'navigation'}`)
+        } else {
+          lines.push('LOGIN pass login form submitted successfully')
+        }
+      }
+
+      // Workflow-pattern or assertion evidence for non-login form submits
+      if (patternMatch(/submit|save|send/)) lines.push('form submission pattern passed')
+      if (assertMatch(/form.submit|submit/))  lines.push('form submission assertion passed')
+
+      // Any other passing executedCheck that looks like a form submit
+      const otherFormChecks = report.executedChecks.filter(c =>
+        c.status === EXECUTION_STATUS.PASS &&
+        c.type !== 'login' &&
+        /form|submit|save/.test((c.type || c.target || '').toLowerCase())
+      )
+      for (const fc of otherFormChecks) {
+        lines.push(`EXECUTION status=${fc.status} target=${fc.target} category=${fc.outcomeCategory}`)
+      }
+
+      return multi(lines)
+    }
 
     default:
       return null

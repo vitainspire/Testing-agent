@@ -4,9 +4,9 @@ import axios from 'axios'
 
 export default function App() {
 
-  const [url, setUrl]           = useState('')
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
+  const [url, setUrl]           = useState('https://www.saucedemo.com')
+  const [username, setUsername] = useState('standard_user')
+  const [password, setPassword] = useState('secret_sauce')
   const [report, setReport]     = useState(null)
   const [loading, setLoading]   = useState(false)
 
@@ -184,10 +184,28 @@ export default function App() {
               hint='Business assertions: passed / total'
             />
             <MetricCard
+              title='Expected Workflows'
+              value={report.summary.expectedWorkflowCount ?? 0}
+              color='#0891b2'
+              hint='Business workflows expected for this application type'
+            />
+            <MetricCard
+              title='Completed Workflows'
+              value={`${report.summary.completedWorkflowCount ?? 0}/${report.summary.expectedWorkflowCount ?? 0}`}
+              color='#059669'
+              hint='Business workflows with confirmed execution evidence / total expected'
+            />
+            <MetricCard
+              title='Flaky Actions'
+              value={report.summary.flakyActionCount ?? 0}
+              color='#7c3aed'
+              hint='Actions showing inconsistent outcomes or high retry counts'
+            />
+            <MetricCard
               title='Missing Workflows'
               value={report.missingWorkflows?.length ?? 0}
               color='#dc2626'
-              hint='Workflow patterns detected but not successfully executed'
+              hint='Expected business workflows not yet completed'
             />
           </div>
 
@@ -197,7 +215,18 @@ export default function App() {
             recommendations={report.recommendations}
             assertions={report.assertions || []}
             missingWorkflows={report.missingWorkflows || []}
+            qualityFactors={report.qualityFactors || []}
           />
+
+          {/* Business Workflow Coverage */}
+          {(report.completedWorkflows?.length > 0 || report.missingWorkflows?.length > 0) && (
+            <BusinessWorkflowsPanel
+              completed={report.completedWorkflows || []}
+              missing={report.missingWorkflows || []}
+              expected={report.expectedWorkflows || []}
+              coverage={report.summary.workflowCoverage ?? 0}
+            />
+          )}
 
           {/* AI QA Risk Analysis */}
           {report.qaAnalysis && (
@@ -215,6 +244,13 @@ export default function App() {
           {report.navigationGraph && report.navigationGraph.nodes.length > 0 && (
             <Section title='Navigation Graph'>
               <NavigationGraphPanel graph={report.navigationGraph} />
+            </Section>
+          )}
+
+          {/* Flaky Actions */}
+          {report.flakyActions && report.flakyActions.length > 0 && (
+            <Section title='Flaky Actions'>
+              <FlakyActionsPanel actions={report.flakyActions} />
             </Section>
           )}
 
@@ -1222,7 +1258,7 @@ function VisualAnalysisSection({ analysis }) {
  * Coverage & Quality panel — shows a visual breakdown of execution outcomes
  * and renders deterministic recommendations as actionable items.
  */
-function CoverageQualityPanel({ summary = {}, recommendations = [], assertions = [], missingWorkflows = [] }) {
+function CoverageQualityPanel({ summary = {}, recommendations = [], assertions = [], missingWorkflows = [], qualityFactors = [] }) {
   const {
     executedTests         = 0,
     passedTests           = 0,
@@ -1343,6 +1379,30 @@ function CoverageQualityPanel({ summary = {}, recommendations = [], assertions =
           </div>
         </div>
 
+        {/* Quality Factors Breakdown */}
+        {qualityFactors.length > 0 && (
+          <div>
+            <div style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>
+              Quality Factor Breakdown
+            </div>
+            {qualityFactors.map((f, i) => {
+              const pct = f.max > 0 ? Math.round((f.score / f.max) * 100) : 0
+              const color = pct >= 80 ? '#16a34a' : pct >= 50 ? '#d97706' : '#dc2626'
+              return (
+                <div key={i} style={{ marginBottom: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#475569', marginBottom: '3px' }}>
+                    <span>{f.name}</span>
+                    <span style={{ fontWeight: '600', color }}>{f.score}<span style={{ color: '#94a3b8', fontWeight: '400' }}>/{f.max}</span></span>
+                  </div>
+                  <div style={{ height: '5px', background: '#f1f5f9', borderRadius: '999px', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: '999px', transition: 'width 0.6s ease' }} />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
         {/* Recommendations */}
         {recommendations.length > 0 && (
           <div style={{ gridColumn: '1 / -1' }}>
@@ -1397,6 +1457,8 @@ function AssertionTable({ assertions = [] }) {
           <tr>
             <th style={thStyle}>Result</th>
             <th style={thStyle}>Severity</th>
+            <th style={thStyle}>Type</th>
+            <th style={thStyle}>Conf</th>
             <th style={thStyle}>Assertion</th>
             <th style={thStyle}>Expected</th>
             <th style={thStyle}>Actual</th>
@@ -1423,6 +1485,10 @@ function AssertionTable({ assertions = [] }) {
                 }}>
                   {a.severity}
                 </span>
+              </td>
+              <td style={{ ...tdStyle, fontSize: '11px', color: '#475569' }}>{a.assertionType || '—'}</td>
+              <td style={{ ...tdStyle, fontSize: '11px', fontWeight: '600', color: a.confidence >= 0.8 ? '#15803d' : a.confidence >= 0.5 ? '#b45309' : '#64748b' }}>
+                {a.confidence != null ? `${Math.round(a.confidence * 100)}%` : '—'}
               </td>
               <td style={{ ...tdStyle, fontWeight: '600', color: '#1e293b' }}>{a.assertion}</td>
               <td style={{ ...tdStyle, color: '#475569', fontSize: '12px' }}>{a.expected}</td>
@@ -1534,6 +1600,149 @@ function NavigationGraphPanel({ graph }) {
       <div style={{ marginTop: '8px', fontSize: '11px', color: '#94a3b8' }}>
         {graph.nodes.length} pages · {graph.edges.length} transitions · green = passed
       </div>
+    </div>
+  )
+}
+
+function BusinessWorkflowsPanel({ completed = [], missing = [], expected = [], coverage = 0 }) {
+  const coverageColor = coverage >= 80 ? '#16a34a' : coverage >= 50 ? '#d97706' : '#dc2626'
+
+  return (
+    <div style={{
+      background: '#fff', borderRadius: '16px', padding: '24px',
+      marginBottom: '20px', boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+        <h2 style={{ margin: 0, fontSize: '18px', color: '#1e293b' }}>Business Workflow Coverage</h2>
+        <span style={{
+          fontSize: '20px', fontWeight: '700', color: coverageColor,
+          background: coverage >= 80 ? '#dcfce7' : coverage >= 50 ? '#fef9c3' : '#fee2e2',
+          padding: '4px 14px', borderRadius: '999px',
+        }}>
+          {coverage}% — {completed.length}/{expected.length} workflows
+        </span>
+      </div>
+
+      <div style={{ height: '8px', background: '#f1f5f9', borderRadius: '999px', overflow: 'hidden', marginBottom: '24px' }}>
+        <div style={{ height: '100%', width: `${coverage}%`, background: coverageColor, borderRadius: '999px', transition: 'width 0.7s ease' }} />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+        {/* Completed */}
+        <div>
+          <div style={{ fontSize: '12px', fontWeight: '700', color: '#15803d', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>
+            Completed ({completed.length})
+          </div>
+          {completed.length === 0
+            ? <p style={{ color: '#94a3b8', margin: 0, fontSize: '13px' }}>No workflows completed yet.</p>
+            : completed.map((w, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'flex-start', gap: '10px',
+                padding: '10px 12px', marginBottom: '8px',
+                background: '#f0fdf4', borderRadius: '10px',
+                borderLeft: '3px solid #16a34a',
+              }}>
+                <span style={{ fontSize: '16px', marginTop: '1px' }}>✓</span>
+                <div>
+                  <div style={{ fontWeight: '600', fontSize: '13px', color: '#15803d' }}>{w.label || w}</div>
+                  {w.evidence && (
+                    <div style={{ fontSize: '11px', color: '#4ade80', marginTop: '2px' }}>{w.evidence}</div>
+                  )}
+                </div>
+              </div>
+            ))
+          }
+        </div>
+
+        {/* Missing */}
+        <div>
+          <div style={{ fontSize: '12px', fontWeight: '700', color: '#b91c1c', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>
+            Missing ({missing.length})
+          </div>
+          {missing.length === 0
+            ? <p style={{ color: '#94a3b8', margin: 0, fontSize: '13px' }}>All workflows completed.</p>
+            : missing.map((w, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                padding: '10px 12px', marginBottom: '8px',
+                background: '#fff5f5', borderRadius: '10px',
+                borderLeft: '3px solid #dc2626',
+              }}>
+                <span style={{ fontSize: '16px' }}>✗</span>
+                <div style={{ fontWeight: '600', fontSize: '13px', color: '#b91c1c' }}>
+                  {typeof w === 'string' ? w : w.label}
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const STABILITY_BADGE = {
+  'stable':         { background: '#dcfce7', color: '#15803d' },
+  'unstable':       { background: '#fef9c3', color: '#854d0e' },
+  'flaky':          { background: '#fff7ed', color: '#c2410c' },
+  'critical-flaky': { background: '#fee2e2', color: '#b91c1c' },
+}
+
+function FlakyActionsPanel({ actions = [] }) {
+  if (actions.length === 0) {
+    return <p style={{ color: '#94a3b8', margin: 0 }}>No flaky actions detected.</p>
+  }
+
+  const thStyle = {
+    textAlign: 'left', padding: '10px 14px', background: '#f8fafc',
+    borderBottom: '2px solid #e2e8f0', fontSize: '11px', color: '#64748b',
+    textTransform: 'uppercase', letterSpacing: '0.06em', whiteSpace: 'nowrap',
+  }
+  const tdStyle = { padding: '10px 14px', borderBottom: '1px solid #f1f5f9', fontSize: '13px', verticalAlign: 'top' }
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Stability</th>
+            <th style={thStyle}>Target</th>
+            <th style={thStyle}>Retries</th>
+            <th style={thStyle}>Occurrences</th>
+            <th style={thStyle}>Reasons</th>
+            <th style={thStyle}>Pages</th>
+          </tr>
+        </thead>
+        <tbody>
+          {actions.map((a, i) => {
+            const badge = STABILITY_BADGE[a.stability] || STABILITY_BADGE['unstable']
+            return (
+              <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                <td style={tdStyle}>
+                  <span style={{ ...badge, padding: '2px 8px', borderRadius: '999px', fontSize: '11px', fontWeight: '700' }}>
+                    {a.stability}
+                  </span>
+                </td>
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '12px', color: '#1e293b', maxWidth: '200px', wordBreak: 'break-all' }}>
+                  {a.target}
+                </td>
+                <td style={{ ...tdStyle, fontWeight: '700', color: a.retryCount >= 2 ? '#b91c1c' : '#d97706', textAlign: 'center' }}>
+                  {a.retryCount}
+                </td>
+                <td style={{ ...tdStyle, textAlign: 'center', color: '#475569' }}>{a.occurrences}</td>
+                <td style={{ ...tdStyle, fontSize: '12px', color: '#475569' }}>
+                  {(a.reasons || []).join(' · ')}
+                </td>
+                <td style={{ ...tdStyle, fontSize: '11px', color: '#64748b', maxWidth: '180px' }}>
+                  {(a.pages || []).map((p, j) => (
+                    <div key={j} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p}</div>
+                  ))}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }

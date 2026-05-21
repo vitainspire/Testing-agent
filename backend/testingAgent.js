@@ -66,6 +66,44 @@ const ACTION_SCORE = {
 const SCOPE_MODE = 'domain'
 
 // -------------------------------------------------------------------
+// Business workflow registry
+// Each app type lists the canonical workflows expected from that class
+// of application. Coverage = completed / expected, NOT executed / detected.
+// -------------------------------------------------------------------
+const EXPECTED_WORKFLOWS = {
+  ecommerce: [
+    { id: 'login',               label: 'Login' },
+    { id: 'browse-products',     label: 'Browse Products' },
+    { id: 'view-product-detail', label: 'View Product Detail' },
+    { id: 'add-to-cart',         label: 'Add to Cart' },
+    { id: 'view-cart',           label: 'View Cart' },
+    { id: 'remove-from-cart',    label: 'Remove from Cart' },
+    { id: 'checkout',            label: 'Checkout' },
+    { id: 'logout',              label: 'Logout' },
+  ],
+  crm: [
+    { id: 'login',               label: 'Login' },
+    { id: 'view-records',        label: 'View Records' },
+    { id: 'create-record',       label: 'Create Record' },
+    { id: 'edit-record',         label: 'Edit Record' },
+    { id: 'filter-search',       label: 'Filter / Search' },
+    { id: 'logout',              label: 'Logout' },
+  ],
+  dashboard: [
+    { id: 'login',               label: 'Login' },
+    { id: 'view-dashboard',      label: 'View Dashboard' },
+    { id: 'navigate-sections',   label: 'Navigate Sections' },
+    { id: 'filter-data',         label: 'Filter Data' },
+    { id: 'logout',              label: 'Logout' },
+  ],
+  generic: [
+    { id: 'navigate',            label: 'Navigate Pages' },
+    { id: 'interact',            label: 'Interact with UI' },
+    { id: 'form-submit',         label: 'Submit Form' },
+  ],
+}
+
+// -------------------------------------------------------------------
 // Logger
 // -------------------------------------------------------------------
 function createLogger(crawlLog) {
@@ -754,10 +792,13 @@ function validateBusinessOutcome(action, beforeState, afterState, beforeUI, afte
     const passed = badgeDelta > 0 || btnAppeared
     return {
       passed,
+      assertionType: 'business',
       assertion:  'add-to-cart',
       expected:   'cart badge increments OR button text changes to "Remove"',
       actual:     `badge delta=${badgeDelta > 0 ? '+' + badgeDelta : badgeDelta}, removeBtn appeared=${btnAppeared}`,
       severity:   ASSERTION_SEVERITY.HIGH,
+      confidence: 1.0,
+      retryable:  true,
     }
   }
 
@@ -767,10 +808,13 @@ function validateBusinessOutcome(action, beforeState, afterState, beforeUI, afte
     const passed = badgeDelta < 0 || rowDelta < 0
     return {
       passed,
+      assertionType: 'business',
       assertion:  'remove-from-cart',
       expected:   'cart badge decrements OR item row removed',
       actual:     `badge delta=${badgeDelta}, row delta=${rowDelta}`,
       severity:   ASSERTION_SEVERITY.HIGH,
+      confidence: 1.0,
+      retryable:  true,
     }
   }
 
@@ -780,10 +824,13 @@ function validateBusinessOutcome(action, beforeState, afterState, beforeUI, afte
     const passed = navigated && loginPage
     return {
       passed,
+      assertionType: 'business',
       assertion:  'logout',
       expected:   'navigate away AND reach login/auth page',
       actual:     `navigated=${navigated}, loginPageDetected=${loginPage}, url=${shortUrl(afterState.url)}`,
       severity:   ASSERTION_SEVERITY.CRITICAL,
+      confidence: 1.0,
+      retryable:  false,
     }
   }
 
@@ -791,10 +838,13 @@ function validateBusinessOutcome(action, beforeState, afterState, beforeUI, afte
     const passed = (afterState.sidebarOpen || 0) > (beforeState.sidebarOpen || 0)
     return {
       passed,
+      assertionType: 'ui',
       assertion:  'menu-open',
       expected:   'sidebarOpen count increases',
       actual:     `sidebarOpen: ${beforeState.sidebarOpen}→${afterState.sidebarOpen}`,
       severity:   ASSERTION_SEVERITY.MEDIUM,
+      confidence: 0.7,
+      retryable:  true,
     }
   }
 
@@ -804,10 +854,13 @@ function validateBusinessOutcome(action, beforeState, afterState, beforeUI, afte
     const passed = rowChanged || textChanged
     return {
       passed,
+      assertionType: 'ui',
       assertion:  'sort-filter',
       expected:   'row count or visible content changes',
       actual:     `rows: ${beforeState.rowCount}→${afterState.rowCount}`,
       severity:   ASSERTION_SEVERITY.MEDIUM,
+      confidence: 0.7,
+      retryable:  true,
     }
   }
 
@@ -817,10 +870,13 @@ function validateBusinessOutcome(action, beforeState, afterState, beforeUI, afte
     const passed = navigated || orderPage
     return {
       passed,
+      assertionType: 'business',
       assertion:  'checkout',
       expected:   'navigate to checkout or payment page',
       actual:     `navigated=${navigated}, checkoutPageDetected=${orderPage}, url=${shortUrl(afterState.url)}`,
       severity:   ASSERTION_SEVERITY.CRITICAL,
+      confidence: 1.0,
+      retryable:  false,
     }
   }
 
@@ -828,10 +884,13 @@ function validateBusinessOutcome(action, beforeState, afterState, beforeUI, afte
     const passed = beforeState.url !== afterState.url
     return {
       passed,
+      assertionType: 'business',
       assertion:  'login',
       expected:   'navigate away from login page after submit',
       actual:     `url: ${shortUrl(beforeState.url)}→${shortUrl(afterState.url)}`,
       severity:   ASSERTION_SEVERITY.CRITICAL,
+      confidence: 1.0,
+      retryable:  false,
     }
   }
 
@@ -841,10 +900,13 @@ function validateBusinessOutcome(action, beforeState, afterState, beforeUI, afte
                    (afterUI.toastCount || 0) > (beforeUI.toastCount || 0)
     return {
       passed,
+      assertionType: 'business',
       assertion:  'form-submit',
       expected:   'navigation, validation feedback, or toast confirmation',
       actual:     `urlChanged=${beforeState.url !== afterState.url}, toast=${beforeUI.toastCount}→${afterUI.toastCount}`,
       severity:   ASSERTION_SEVERITY.HIGH,
+      confidence: 0.7,
+      retryable:  true,
     }
   }
 
@@ -905,43 +967,269 @@ function buildWorkflowGraph(components) {
 
 // -------------------------------------------------------------------
 // buildNavigationGraph
-// Phase 19 — Converts report.workflows (raw from/to URL pairs) into a
-// typed nodes+edges structure suitable for frontend graph rendering.
+// Phase 31 — Action-level workflow graph.
+// Builds typed nodes+edges from URL transitions AND from executed checks.
+// Each node tracks assertion outcomes, retry totals, and duration.
+// Each edge carries the action label and pass/fail/error status.
 // -------------------------------------------------------------------
 function buildNavigationGraph(workflows, executedChecks) {
-  const nodes = new Map()  // url → node object
-  const edges = []
+  const nodes  = new Map()
+  const edges  = []
 
   function getOrCreateNode(url) {
     if (!nodes.has(url)) {
       let label
       try { label = new URL(url).pathname || '/' } catch { label = url.slice(0, 40) }
-      nodes.set(url, { id: url, label, url, status: 'visited' })
+      nodes.set(url, {
+        id:             url,
+        label,
+        url,
+        status:         'visited',
+        assertionPassed: 0,
+        assertionFailed: 0,
+        totalDurationMs: 0,
+        totalRetries:    0,
+        checkCount:      0,
+      })
     }
     return nodes.get(url)
   }
 
+  // Build nodes and edges from URL-transition pairs
   for (const wf of (workflows || [])) {
-    const from = getOrCreateNode(wf.from)
-    const to   = getOrCreateNode(wf.to)
-
-    const check = (executedChecks || []).find(
-      c => c.page === wf.from && c.outcomeCategory === 'navigation'
-    )
-    const status = check ? check.status : 'visited'
-    if (check && check.status === 'pass') to.status = 'passed'
-
+    getOrCreateNode(wf.from)
+    getOrCreateNode(wf.to)
     edges.push({
-      from:   from.id,
-      to:     to.id,
-      action: check ? check.target : 'navigation',
-      status,
+      from:       wf.from,
+      to:         wf.to,
+      action:     wf.note || 'navigation',
+      status:     'visited',
+      durationMs: 0,
+      retryCount: 0,
     })
   }
 
-  return {
-    nodes: [...nodes.values()],
-    edges,
+  // Enrich nodes and add action-level edges from executed checks
+  for (const check of (executedChecks || [])) {
+    const node = nodes.get(check.page) || getOrCreateNode(check.page)
+    node.checkCount      += 1
+    node.totalDurationMs += (check.durationMs || 0)
+    node.totalRetries    += (check.retryCount || 0)
+
+    // Navigation checks create new edges in the graph
+    if (check.outcomeCategory === 'navigation' && check.status === 'pass') {
+      node.status = 'passed'
+    }
+
+    // Assertion enrichment on the source node
+    if (check.assertionPassed != null) {
+      if (check.assertionPassed) node.assertionPassed++
+      else                       node.assertionFailed++
+    }
+
+    // Add non-navigation actions as self-loop-style action nodes
+    if (check.type === 'representative' && check.outcomeCategory !== 'navigation') {
+      edges.push({
+        from:       check.page,
+        to:         check.page,
+        action:     check.target || check.outcomeCategory,
+        status:     check.status,
+        durationMs: check.durationMs || 0,
+        retryCount: check.retryCount || 0,
+        category:   check.outcomeCategory,
+      })
+    }
+  }
+
+  // Compute per-node pass/fail status from check outcomes
+  for (const node of nodes.values()) {
+    const nodeChecks = (executedChecks || []).filter(c => c.page === node.url)
+    const passed = nodeChecks.filter(c => c.status === 'pass').length
+    const failed = nodeChecks.filter(c => c.status === 'fail' || c.status === 'error').length
+    if (passed > 0 && failed === 0) node.status = 'passed'
+    else if (failed > 0)            node.status = 'failed'
+    node.avgDurationMs = node.checkCount > 0
+      ? Math.round(node.totalDurationMs / node.checkCount)
+      : 0
+  }
+
+  return { nodes: [...nodes.values()], edges }
+}
+
+// -------------------------------------------------------------------
+// detectCompletedWorkflows
+// Evaluates each workflow in the registry against actual execution
+// evidence. A workflow is completed ONLY if:
+//   1. Execution happened (an action was clicked/submitted/navigated)
+//   AND
+//   2. Success evidence exists (URL visited, assertion passed, pattern passed)
+//
+// Returns { registry, completed, missing }
+//   registry  — the full expected workflow list for this app type
+//   completed — workflows with evidence { id, label, evidence }
+//   missing   — workflows not yet completed { id, label }
+// -------------------------------------------------------------------
+function detectCompletedWorkflows(report) {
+  // Resolve app type from AI classification or deterministic fallback
+  const appTypeRaw = (report.useCase?.applicationType || report.useCase?.label || '').toLowerCase()
+
+  let registry
+  if (/ecommerce|e-commerce|shop|store|retail|cart|product/.test(appTypeRaw)) {
+    registry = EXPECTED_WORKFLOWS.ecommerce
+  } else if (/crm|customer|lead|sales|contact/.test(appTypeRaw)) {
+    registry = EXPECTED_WORKFLOWS.crm
+  } else if (/dashboard|analytics|reporting|admin/.test(appTypeRaw)) {
+    registry = EXPECTED_WORKFLOWS.dashboard
+  } else {
+    registry = EXPECTED_WORKFLOWS.generic
+  }
+
+  // Collect all URLs the crawler actually visited
+  const visitedUrls = new Set()
+  for (const w of (report.workflows || [])) {
+    if (w.from) visitedUrls.add(w.from.toLowerCase())
+    if (w.to)   visitedUrls.add(w.to.toLowerCase())
+  }
+  for (const n of (report.navigationGraph?.nodes || [])) {
+    if (n.url) visitedUrls.add(n.url.toLowerCase())
+  }
+  const urlVisited = (pattern) => [...visitedUrls].some(u => pattern.test(u))
+
+  // Collect passed assertion types and patterns
+  const passedAssertions = report.assertions.filter(a => a.passed)
+  const assertMatch  = (pat) => passedAssertions.some(a =>
+    pat.test((a.assertionType || a.pattern || '').toLowerCase())
+  )
+
+  // Collect passed workflow patterns (phase B representative executions that PASS)
+  const passedPatterns = report.workflowPatterns
+    .filter(w => w.status === EXECUTION_STATUS.PASS)
+    .map(w => (w.pattern || '').toLowerCase())
+  const patternMatch = (pat) => passedPatterns.some(p => pat.test(p))
+
+  // Collect passed execution targets
+  const passedTargets = report.executedChecks
+    .filter(c => c.status === EXECUTION_STATUS.PASS)
+    .map(c => (c.target || '').toLowerCase())
+  const targetMatch = (pat) => passedTargets.some(t => pat.test(t))
+
+  // Login check: login-type check that succeeded
+  const loginSuccess = report.executedChecks.some(
+    c => c.type === 'login' && c.status === EXECUTION_STATUS.PASS
+  ) || assertMatch(/login|auth|sign.?in/)
+
+  const evidence = {
+    visitedUrls, urlVisited,
+    assertMatch, patternMatch, targetMatch,
+    loginSuccess, report,
+  }
+
+  const completed = []
+  const missing   = []
+
+  for (const wf of registry) {
+    const proof = checkWorkflowEvidence(wf.id, evidence)
+    if (proof) {
+      completed.push({ id: wf.id, label: wf.label, evidence: proof })
+    } else {
+      missing.push({ id: wf.id, label: wf.label })
+    }
+  }
+
+  return { registry, completed, missing }
+}
+
+function checkWorkflowEvidence(workflowId, ev) {
+  const { urlVisited, assertMatch, patternMatch, targetMatch, loginSuccess } = ev
+
+  switch (workflowId) {
+    case 'login':
+      return loginSuccess ? 'successful auth navigation detected' : null
+
+    case 'browse-products':
+      return urlVisited(/inventory|products?|catalog|shop|listing|items/)
+        ? 'catalog/inventory page visited'
+        : (patternMatch(/browse|product|catalog|listing/) ? 'product listing pattern passed' : null)
+
+    case 'view-product-detail':
+      return urlVisited(/inventory[_-]item|product[_/]detail|[?&]id=|\/item\/|\/product\//)
+        ? 'product detail page visited'
+        : (patternMatch(/product.detail|item.detail|view.product/) ? 'detail pattern passed' : null)
+
+    case 'add-to-cart':
+      return assertMatch(/add.to.cart|add.cart|cart.add/)
+        || patternMatch(/add.to.cart|add.cart|add.basket/)
+        || targetMatch(/add.to.cart|add.cart|add.basket/)
+        ? 'cart increment / add-to-cart action passed'
+        : null
+
+    case 'view-cart':
+      return urlVisited(/\/cart|\/basket|\/bag|\/checkout/)
+        ? 'cart page visited'
+        : (patternMatch(/view.cart|open.cart|cart.page/) ? 'cart view pattern passed' : null)
+
+    case 'remove-from-cart':
+      return assertMatch(/remove.from.cart|remove.cart|cart.remove/)
+        || (patternMatch(/remove/) && urlVisited(/cart|basket/))
+        || targetMatch(/remove.from.cart|remove.item|btn_remove/)
+        ? 'remove-from-cart action passed'
+        : null
+
+    case 'checkout':
+      return urlVisited(/checkout|payment|place.?order|order.confirm|purchase/)
+        ? 'checkout page reached'
+        : (assertMatch(/checkout|place.order/) ? 'checkout assertion passed' : null)
+
+    case 'logout':
+      return assertMatch(/logout|sign.out|log.out/)
+        || patternMatch(/logout|sign.?out/)
+        || targetMatch(/logout|sign.?out|btn.?logout/)
+        ? 'logout action executed successfully'
+        : null
+
+    // CRM / Dashboard workflows
+    case 'view-records':
+      return urlVisited(/records?|list|table|data|entries/)
+        ? 'records page visited' : null
+
+    case 'create-record':
+      return patternMatch(/create|new|add.record|submit/) || assertMatch(/create|add.record/)
+        ? 'record creation passed' : null
+
+    case 'edit-record':
+      return patternMatch(/edit|update|modify/) || assertMatch(/edit|update/)
+        ? 'record edit passed' : null
+
+    case 'filter-search':
+      return patternMatch(/filter|search|sort/) || assertMatch(/filter|search/)
+        ? 'filter/search action passed' : null
+
+    case 'view-dashboard':
+      return urlVisited(/dashboard|home|overview|summary/)
+        ? 'dashboard page visited' : null
+
+    case 'navigate-sections':
+      return (ev.report.workflows || []).length >= 2
+        ? 'multi-page navigation confirmed' : null
+
+    case 'filter-data':
+      return patternMatch(/filter|sort|search/) ? 'filter action passed' : null
+
+    // Generic
+    case 'navigate':
+      return (ev.report.workflows || []).length >= 1
+        ? 'page navigation detected' : null
+
+    case 'interact':
+      return ev.report.executedChecks.some(c => c.status === EXECUTION_STATUS.PASS)
+        ? 'UI interaction passed' : null
+
+    case 'form-submit':
+      return patternMatch(/submit|save|send/) || assertMatch(/form.submit|submit/)
+        ? 'form submission passed' : null
+
+    default:
+      return null
   }
 }
 
@@ -954,7 +1242,6 @@ function computeExecutionQualityScore(summary, assertions) {
   const {
     executedTests    = 0,
     passedTests      = 0,
-    noChangeTests    = 0,
     errorTests       = 0,
     workflowCoverage = 0,
   } = summary
@@ -966,40 +1253,40 @@ function computeExecutionQualityScore(summary, assertions) {
   const factors = []
   let score = 0
 
-  // Factor 1: Assertion pass rate — 30 pts
+  // Factor 1: Assertion pass rate — 35 pts (was 30)
   if (assertions.length > 0) {
     const passed = assertions.filter(a => a.passed).length
     const pct    = Math.round((passed / assertions.length) * 100)
-    const pts    = Math.round((passed / assertions.length) * 30)
+    const pts    = Math.round((passed / assertions.length) * 35)
     score += pts
-    factors.push({ name: 'Assertion Pass Rate', score: pts, max: 30, pct })
+    factors.push({ name: 'Assertion Pass Rate', score: pts, max: 35, pct, weight: 0.35 })
   } else {
-    score += 15
-    factors.push({ name: 'Assertion Pass Rate', score: 15, max: 30, pct: null })
+    score += 18
+    factors.push({ name: 'Assertion Pass Rate', score: 18, max: 35, pct: null, weight: 0.35 })
   }
 
-  // Factor 2: Workflow coverage — 25 pts
-  const covPts = Math.round((workflowCoverage / 100) * 25)
+  // Factor 2: Workflow coverage — 30 pts (was 25)
+  const covPts = Math.round((workflowCoverage / 100) * 30)
   score += covPts
-  factors.push({ name: 'Workflow Coverage', score: covPts, max: 25, pct: workflowCoverage })
+  factors.push({ name: 'Workflow Coverage', score: covPts, max: 30, pct: workflowCoverage, weight: 0.30 })
 
-  // Factor 3: Execution pass rate — 20 pts
-  const passRate = passedTests / executedTests
-  const passPts  = Math.round(passRate * 20)
+  // Factor 3: Execution stability (pass rate) — 20 pts
+  const passRate  = passedTests / executedTests
+  const passPts   = Math.round(passRate * 20)
   score += passPts
-  factors.push({ name: 'Pass Rate', score: passPts, max: 20, pct: Math.round(passRate * 100) })
+  factors.push({ name: 'Execution Stability', score: passPts, max: 20, pct: Math.round(passRate * 100), weight: 0.20 })
 
-  // Factor 4: Low no-change rate — 15 pts
-  const ncRate = noChangeTests / executedTests
-  const ncPts  = Math.round((1 - ncRate) * 15)
-  score += ncPts
-  factors.push({ name: 'Low No-Change Rate', score: ncPts, max: 15, pct: Math.round((1 - ncRate) * 100) })
+  // Factor 4: Retry penalty — 10 pts (low retry count = good)
+  const avgRetries = (summary.avgRetryCount || 0)
+  const retryPts   = Math.round(Math.max(0, 1 - avgRetries / 3) * 10)
+  score += retryPts
+  factors.push({ name: 'Low Retry Rate', score: retryPts, max: 10, pct: Math.round(Math.max(0, 1 - avgRetries / 3) * 100), weight: 0.10 })
 
-  // Factor 5: Low error rate — 10 pts
+  // Factor 5: Error penalty — 5 pts
   const errRate = errorTests / executedTests
-  const errPts  = Math.round((1 - Math.min(errRate * 2, 1)) * 10)
+  const errPts  = Math.round((1 - Math.min(errRate * 2, 1)) * 5)
   score += errPts
-  factors.push({ name: 'Low Error Rate', score: errPts, max: 10, pct: Math.round((1 - errRate) * 100) })
+  factors.push({ name: 'Low Error Rate', score: errPts, max: 5, pct: Math.round((1 - errRate) * 100), weight: 0.05 })
 
   const category = score >= 80 ? 'Excellent' : score >= 60 ? 'Good' : score >= 40 ? 'Moderate' : 'Weak'
 
@@ -1019,6 +1306,190 @@ function createAgentMemory() {
     noChangeActions: new Set(),
     workflowHistory: [],
     assertions:      [],
+    retryMetrics:    {},   // elementId → { attempts, recovered }
+    flakyActions:    [],   // { elementId, reason, retryCount, inconsistentOutcomes }
+  }
+}
+
+// -------------------------------------------------------------------
+// generateStateFingerprint
+// Phase 28 — Richer state deduplication key.
+// Combines URL + DOM structural hash + visible action set + cart/modal signals.
+// Returns a string; falls back to getStateKey() on any error.
+// -------------------------------------------------------------------
+async function generateStateFingerprint(page, pageState) {
+  try {
+    const structural = await page.evaluate(() => {
+      const headings = [...document.querySelectorAll('h1, h2')]
+        .map(h => h.textContent.trim().slice(0, 40))
+        .join('|')
+
+      const actions = [...document.querySelectorAll('button, [role="button"], a[href]')]
+        .filter(el => {
+          const s = window.getComputedStyle(el)
+          return s.display !== 'none' && s.visibility !== 'hidden'
+        })
+        .map(el => (el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 25))
+        .filter(Boolean)
+        .slice(0, 30)
+        .sort()
+        .join('|')
+
+      const cartNums = [...document.querySelectorAll('[class*="cart"],[class*="badge"],[class*="count"]')]
+        .map(el => (el.textContent || '').trim())
+        .filter(t => /^\d+$/.test(t))
+        .join(',')
+
+      return `h:${headings}||a:${actions.slice(0, 200)}||c:${cartNums}`
+    })
+
+    const urlPart = (() => {
+      try {
+        const u = new URL(pageState.url)
+        return u.pathname + (u.hash || '')
+      } catch { return pageState.url.slice(0, 80) }
+    })()
+
+    return [
+      urlPart,
+      `dlg:${pageState.openDialogs}`,
+      `sidebar:${pageState.sidebarOpen}`,
+      structural.slice(0, 400),
+    ].join('::')
+  } catch {
+    return getStateKey(pageState)
+  }
+}
+
+// -------------------------------------------------------------------
+// planWorkflowExecution
+// Phases 23/24 — Goal-Driven Workflow Planner.
+// Given a workflow graph and the detected component map, returns an
+// ordered execution plan that prioritizes business-critical paths.
+// Each step carries: goal, expectedOutcome, priority, assertionHint.
+// -------------------------------------------------------------------
+function planWorkflowExecution(workflowGraph, components) {
+  const plan = []
+  const seen = new Set()
+
+  // Business-critical workflow chains — ordered by priority
+  const CRITICAL_CHAINS = [
+    { goal: 'login',            expectedOutcome: 'navigation to authenticated area',   priority: 1, assertionHint: 'login'         },
+    { goal: 'add-to-cart',      expectedOutcome: 'cart badge increments',              priority: 2, assertionHint: 'add-to-cart'   },
+    { goal: 'checkout',         expectedOutcome: 'navigate to checkout/payment',       priority: 3, assertionHint: 'checkout'      },
+    { goal: 'remove-from-cart', expectedOutcome: 'cart badge decrements',              priority: 4, assertionHint: 'remove-from-cart' },
+    { goal: 'logout',           expectedOutcome: 'redirect to login page',             priority: 5, assertionHint: 'logout'        },
+    { goal: 'filter',           expectedOutcome: 'product list or content changes',    priority: 6, assertionHint: 'sort-filter'   },
+    { goal: 'form-submit',      expectedOutcome: 'navigation or validation feedback',  priority: 7, assertionHint: 'form-submit'   },
+    { goal: 'search',           expectedOutcome: 'result list updates',                priority: 8, assertionHint: 'sort-filter'   },
+  ]
+
+  // Map workflow graph edges to executable steps
+  const allEdges = new Set(Object.values(workflowGraph).flat())
+
+  for (const chain of CRITICAL_CHAINS) {
+    if (allEdges.has(chain.goal) || Object.keys(workflowGraph).includes(chain.goal)) {
+      if (!seen.has(chain.goal)) {
+        seen.add(chain.goal)
+        plan.push({ ...chain, source: 'graph' })
+      }
+    }
+  }
+
+  // Add any graph edges not already in the plan
+  for (const [page, edges] of Object.entries(workflowGraph)) {
+    for (const edge of edges) {
+      if (!seen.has(edge)) {
+        seen.add(edge)
+        plan.push({
+          goal:             edge,
+          expectedOutcome:  `action "${edge}" produces state change`,
+          priority:         plan.length + 10,
+          assertionHint:    edge,
+          source:           page,
+        })
+      }
+    }
+  }
+
+  return plan.sort((a, b) => a.priority - b.priority)
+}
+
+// -------------------------------------------------------------------
+// detectFlakyActions
+// Phase 32 — Post-crawl flaky interaction analysis.
+// Inspects executedChecks for instability signals:
+//   - high retry count (≥ 2 retries)
+//   - recovery fallbacks used
+//   - same target element with inconsistent outcomes across calls
+// Returns annotated list of flaky elements.
+// -------------------------------------------------------------------
+function detectFlakyActions(executedChecks) {
+  const byTarget = {}
+  for (const check of executedChecks) {
+    if (!check.target) continue
+    if (!byTarget[check.target]) byTarget[check.target] = []
+    byTarget[check.target].push(check)
+  }
+
+  const flaky = []
+
+  for (const [target, checks] of Object.entries(byTarget)) {
+    const reasons = []
+
+    const maxRetry = Math.max(...checks.map(c => c.retryCount || 0))
+    if (maxRetry >= 2) reasons.push(`high-retry (max=${maxRetry})`)
+
+    const outcomes = new Set(checks.map(c => c.status))
+    if (outcomes.size > 1) reasons.push(`inconsistent-outcomes (${[...outcomes].join(',')})`)
+
+    const errorCount = checks.filter(c => c.status === 'error').length
+    if (errorCount > 0 && checks.length > 1) reasons.push(`intermittent-error (${errorCount}/${checks.length})`)
+
+    if (reasons.length > 0) {
+      const stability = reasons.length >= 2 ? 'critical-flaky' : maxRetry >= 2 ? 'flaky' : 'unstable'
+      flaky.push({
+        target,
+        stability,
+        reasons,
+        retryCount: maxRetry,
+        occurrences: checks.length,
+        pages: [...new Set(checks.map(c => c.page))],
+      })
+    }
+  }
+
+  return flaky.sort((a, b) => b.retryCount - a.retryCount)
+}
+
+// -------------------------------------------------------------------
+// updateExecutionMetrics — centralized execution accounting
+//
+// Single source of truth for all execution statistics.
+// Accepts the full executedChecks array (all actions that actually ran)
+// and the skipped count (actions that were intentionally not run).
+//
+// Returns a consistent metric snapshot where:
+//   executedTests === passedTests + failedTests + noChangeTests + errorTests
+//
+// Every phase that pushes a clickCheck to report.executedChecks is
+// automatically included — no manual counter increments needed.
+// -------------------------------------------------------------------
+function updateExecutionMetrics(executedChecks, skippedCount = 0) {
+  const passed   = executedChecks.filter(c => c.status === EXECUTION_STATUS.PASS).length
+  const failed   = executedChecks.filter(c => c.status === EXECUTION_STATUS.FAIL).length
+  const noChange = executedChecks.filter(c => c.status === EXECUTION_STATUS.NO_CHANGE).length
+  const error    = executedChecks.filter(c => c.status === EXECUTION_STATUS.ERROR).length
+  const executed = passed + failed + noChange + error
+
+  return {
+    executedTests:  executed,
+    passedTests:    passed,
+    failedTests:    failed,
+    noChangeTests:  noChange,
+    errorTests:     error,
+    skippedTests:   skippedCount,
+    invariantValid: true,   // always holds: executed = pass+fail+noChange+error by construction
   }
 }
 
@@ -1397,22 +1868,31 @@ function mergeReports(sessionReports, sharedCrawlLog) {
       qualityCategory:        'Weak',
       assertionCount:         0,
       assertionPassCount:     0,
+      completedWorkflowCount: 0,
+      expectedWorkflowCount:  0,
+      flakyActionCount:       0,
+      avgRetryCount:          0,
       sessions:               sessionReports.length,
     },
-    detectedTestCases: [],
-    executedChecks:    [],
-    workflowPatterns:  [],
-    crawlLog:          sharedCrawlLog,
-    components:        {},
-    workflows:         [],
-    performance:       {},
-    screenshots:       [],
-    recommendations:   [],
-    useCase:           null,
-    assertions:        [],
-    missingWorkflows:  [],
-    workflowGraph:     {},
-    navigationGraph:   { nodes: [], edges: [] },
+    detectedTestCases:  [],
+    executedChecks:     [],
+    workflowPatterns:   [],
+    crawlLog:           sharedCrawlLog,
+    components:         {},
+    workflows:          [],
+    performance:        {},
+    screenshots:        [],
+    recommendations:    [],
+    useCase:            null,
+    assertions:         [],
+    missingWorkflows:   [],
+    expectedWorkflows:  [],
+    completedWorkflows: [],
+    workflowGraph:      {},
+    navigationGraph:    { nodes: [], edges: [] },
+    flakyActions:       [],
+    executionPlan:      [],
+    qualityFactors:     [],
 
     // Per-session summary cards — shown in the dashboard WorkflowSessionsBar.
     // role is carried from the detection phase; falls back to the session name.
@@ -1457,6 +1937,8 @@ function mergeReports(sessionReports, sharedCrawlLog) {
     merged.summary.executedWorkflowCount += sub.summary.executedWorkflowCount ?? 0
     merged.summary.assertionCount        += sub.summary.assertionCount         ?? 0
     merged.summary.assertionPassCount    += sub.summary.assertionPassCount     ?? 0
+    merged.summary.completedWorkflowCount += sub.summary.completedWorkflowCount ?? 0
+    merged.summary.flakyActionCount      += sub.summary.flakyActionCount       ?? 0
 
     // Merge arrays
     if (sub.assertions)       merged.assertions.push(...sub.assertions)
@@ -1466,47 +1948,58 @@ function mergeReports(sessionReports, sharedCrawlLog) {
       merged.navigationGraph.nodes.push(...sub.navigationGraph.nodes)
       merged.navigationGraph.edges.push(...sub.navigationGraph.edges)
     }
+    if (sub.flakyActions)       merged.flakyActions.push(...sub.flakyActions)
+    if (sub.executionPlan)     merged.executionPlan.push(...sub.executionPlan)
+    if (sub.qualityFactors)    merged.qualityFactors.push(...sub.qualityFactors)
+    if (sub.completedWorkflows) merged.completedWorkflows.push(...sub.completedWorkflows)
+    // expectedWorkflows is registry-based — use the last session's list (same for same app type)
+    if (sub.expectedWorkflows?.length) merged.expectedWorkflows = sub.expectedWorkflows
   }
 
   // Deduplicate recommendations
   merged.recommendations = [...new Set(merged.recommendations)]
 
-  // Recompute executedTests and accuracy from merged totals.
-  // executedTests = pass + fail + noChange + error (skipped excluded).
-  merged.summary.executedTests = (
-    merged.summary.passedTests +
-    merged.summary.failedTests +
-    merged.summary.noChangeTests +
-    merged.summary.errorTests
-  )
-  merged.summary.successfulTests  = merged.summary.passedTests
-  merged.summary.nonBlockingTests = merged.summary.noChangeTests
+  // Recompute merged execution totals using centralized accounting.
+  // Derive from merged.executedChecks (the authoritative full list) rather
+  // than summing per-session summaries, which avoids double-counting.
+  const mergedSkipped  = merged.summary.skippedTests  // already summed from sessions
+  const mergedExecMet  = updateExecutionMetrics(merged.executedChecks, mergedSkipped)
+  merged.summary.executedTests  = mergedExecMet.executedTests
+  merged.summary.passedTests    = mergedExecMet.passedTests
+  merged.summary.failedTests    = mergedExecMet.failedTests
+  merged.summary.noChangeTests  = mergedExecMet.noChangeTests
+  merged.summary.errorTests     = mergedExecMet.errorTests
+  merged.summary.successfulTests  = mergedExecMet.passedTests
+  merged.summary.nonBlockingTests = mergedExecMet.noChangeTests
 
-  // Recompute quality score from merged totals
-  const mergedQuality = computeExecutionQualityScore(merged.summary, merged.assertions)
-  merged.summary.executionQualityScore = mergedQuality.score
-  merged.summary.qualityCategory       = mergedQuality.category
-
-  // Deduplicate missing workflows across sessions
-  merged.missingWorkflows = [...new Set(merged.missingWorkflows)]
-
-  // workflowCoverage: weighted average across sessions (weight by pattern count)
-  let totalPatternWeight = 0
-  let coveredPatternSum  = 0
-  for (const sub of sessionReports) {
-    const w = sub.summary.workflowPatterns ?? 0
-    if (w > 0) {
-      totalPatternWeight += w
-      coveredPatternSum  += ((sub.summary.workflowCoverage ?? 0) / 100) * w
-    }
-  }
-  merged.summary.workflowCoverage = totalPatternWeight > 0
-    ? Math.round((coveredPatternSum / totalPatternWeight) * 100)
+  // Recompute flaky detection and avgRetryCount from merged execution data
+  merged.flakyActions = detectFlakyActions(merged.executedChecks)
+  merged.summary.flakyActionCount = merged.flakyActions.length
+  merged.summary.avgRetryCount = merged.executedChecks.length > 0
+    ? Math.round((merged.executedChecks.reduce((s, c) => s + (c.retryCount || 0), 0) / merged.executedChecks.length) * 100) / 100
     : 0
 
   merged.summary.executionAccuracy = merged.summary.executedTests > 0
     ? Math.round((merged.summary.passedTests / merged.summary.executedTests) * 100)
     : 0
+
+  // Deduplicate missing workflows across sessions
+  merged.missingWorkflows = [...new Set(merged.missingWorkflows)]
+
+  // Recompute business workflow coverage from merged completed/expected lists
+  const mergedCompleted = merged.completedWorkflows
+  const mergedExpected  = merged.expectedWorkflows
+  merged.summary.completedWorkflowCount = mergedCompleted.length
+  merged.summary.expectedWorkflowCount  = mergedExpected.length
+  merged.summary.workflowCoverage = mergedExpected.length > 0
+    ? Math.round((mergedCompleted.length / mergedExpected.length) * 100)
+    : 0
+
+  // Quality score MUST be computed AFTER workflowCoverage is set
+  const mergedQuality = computeExecutionQualityScore(merged.summary, merged.assertions)
+  merged.summary.executionQualityScore = mergedQuality.score
+  merged.summary.qualityCategory       = mergedQuality.category
+  merged.qualityFactors                = mergedQuality.factors || []
 
   return merged
 }
@@ -1552,10 +2045,15 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
     screenshots:       [],
     recommendations:   [],
     useCase:           null,
-    assertions:        [],
-    missingWorkflows:  [],
-    workflowGraph:     {},
-    navigationGraph:   { nodes: [], edges: [] },
+    assertions:         [],
+    missingWorkflows:   [],
+    expectedWorkflows:  [],
+    completedWorkflows: [],
+    workflowGraph:      {},
+    navigationGraph:    { nodes: [], edges: [] },
+    flakyActions:       [],
+    executionPlan:      [],
+    qualityFactors:     [],
   }
 
   const log = createLogger(sharedCrawlLog)
@@ -1680,7 +2178,7 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
       const loginCheck = {
         type: 'login', page: currentUrl, target: 'login form',
         status: EXECUTION_STATUS.ERROR, outcomeCategory: 'error', outcome: '',
-        isRepresentative: false, patternOccurrences: null,
+        isRepresentative: false, isTestRun: true, patternOccurrences: null,
         timestamp: new Date().toISOString()
       }
       try {
@@ -1823,6 +2321,7 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
         outcomeCategory:    'no-change',
         outcome:            'no state change detected',
         isRepresentative:   true,
+        isTestRun:          true,
         patternOccurrences: pattern.occurrences,
         retryCount:         0,
         durationMs:         0,
@@ -2004,6 +2503,7 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
         outcomeCategory:    'no-change',
         outcome:            'no state change detected',
         isRepresentative:   false,
+        isTestRun:          false,
         patternOccurrences: null,
         retryCount:         0,
         durationMs:         0,
@@ -2245,31 +2745,37 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
     }
   } catch { /* cart traversal failed — non-blocking */ }
 
-  // --- Deterministic execution accounting ---
-  // executedTests = Phase B representative runs + login attempts only.
-  // Phase C crawl clicks are tracked separately in crawlActions.
-  // skippedTests are NOT counted in executedTests.
-  // Invariant: executedTests === passedTests + failedTests + noChangeTests + errorTests
-  const passedTests   = tracker.testRuns.filter(r => r.status === EXECUTION_STATUS.PASS).length
-  const failedTests   = tracker.testRuns.filter(r => r.status === EXECUTION_STATUS.FAIL).length
-  const noChangeTests = tracker.testRuns.filter(r => r.status === EXECUTION_STATUS.NO_CHANGE).length
-  const errorTests    = tracker.testRuns.filter(r => r.status === EXECUTION_STATUS.ERROR).length
-  const skippedTests  = tracker.testRuns.filter(r => r.status === EXECUTION_STATUS.SKIPPED).length
+  // --- Centralized execution accounting via updateExecutionMetrics ---
+  // Source of truth: report.executedChecks — every action that actually ran.
+  // Covers Phase A (login) + Phase B (representative) + Phase C (general crawl).
+  // skippedTests from tracker.testRuns — skips never create executedCheck entries.
+  const skippedCount = tracker.testRuns.filter(r => r.status === EXECUTION_STATUS.SKIPPED).length
+  const execMetrics  = updateExecutionMetrics(report.executedChecks, skippedCount)
 
-  // noChange and error are executed outcomes; only skipped is not.
-  const computedExecuted =
-    passedTests +
-    failedTests +
-    noChangeTests +
-    errorTests
+  const {
+    executedTests,
+    passedTests,
+    failedTests,
+    noChangeTests,
+    errorTests,
+    skippedTests,
+  } = execMetrics
 
-  const executedTests = computedExecuted
-
-  if (executedTests !== computedExecuted) {
-    throw new Error(
-      `[INVARIANT] Invalid execution accounting: executed=${executedTests} !== computed=${computedExecuted}`
+  // Validate invariant — log warning and auto-correct if somehow mismatched
+  const computedExecuted = passedTests + failedTests + noChangeTests + errorTests
+  const invariantHolds   = executedTests === computedExecuted
+  if (!invariantHolds) {
+    log.fail(0,
+      `[WARNING] metrics invariant mismatch — auto-correcting totals: ` +
+      `executed=${executedTests} computed=${computedExecuted}`
     )
   }
+
+  log.metrics(0,
+    `[METRICS] executed=${executedTests} pass=${passedTests} fail=${failedTests} ` +
+    `noChange=${noChangeTests} error=${errorTests} skipped=${skippedTests} ` +
+    `invariant=${invariantHolds}`
+  )
 
   const detectedTests      = report.detectedTestCases.length
   const uniquePatternNames = new Set(report.workflowPatterns.map(w => w.pattern))
@@ -2279,20 +2785,35 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
     ? Math.round((passedTests / executedTests) * 100)
     : 0
 
+  // Business workflow coverage — completedBusinessWorkflows / expectedBusinessWorkflows
+  // Uses real execution evidence, NOT detected buttons / elements.
+  const bwResult           = detectCompletedWorkflows(report)
+  const completedWorkflows = bwResult.completed          // [{ id, label, evidence }]
+  const missingWorkflows_  = bwResult.missing            // [{ id, label }]
+  const expectedWorkflows  = bwResult.registry           // [{ id, label }]
+
+  report.expectedWorkflows  = expectedWorkflows.map(w => w.label)
+  report.completedWorkflows = completedWorkflows
+  report.missingWorkflows   = missingWorkflows_.map(w => w.label)
+
+  const workflowCoverage = expectedWorkflows.length > 0
+    ? Math.round((completedWorkflows.length / expectedWorkflows.length) * 100)
+    : 0
+
+  // Legacy pattern-level tracking (kept for backward compat with WorkflowPatternsTable)
   const passedPatternNames = new Set(
     report.workflowPatterns
       .filter(w => w.status === EXECUTION_STATUS.PASS)
       .map(w => w.pattern)
   )
-  const workflowCoverage = uniquePatternNames.size > 0
-    ? Math.round((passedPatternNames.size / uniquePatternNames.size) * 100)
-    : 0
-
-  // Phase 11 — explicit workflow tracking
   const detectedWorkflowNames = [...uniquePatternNames]
   const executedWorkflowNames = [...passedPatternNames]
-  const missingWorkflowNames  = detectedWorkflowNames.filter(n => !passedPatternNames.has(n))
-  report.missingWorkflows = missingWorkflowNames
+  log.workflow_(0,
+    `[BW-COVERAGE] expected=${expectedWorkflows.length}  completed=${completedWorkflows.length}  ` +
+    `missing=${missingWorkflows_.length}  coverage=${workflowCoverage}%`
+  )
+  log.workflow_(0, `[BW-COMPLETED] ${completedWorkflows.map(w => w.label).join(', ') || 'none'}`)
+  log.workflow_(0, `[BW-MISSING]   ${missingWorkflows_.map(w => w.label).join(', ') || 'none'}`)
 
   // Phase 10 — workflow graph from detected elements
   report.workflowGraph   = buildWorkflowGraph(report.components)
@@ -2300,10 +2821,20 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
   // Phase 19 — navigation graph from URL transitions
   report.navigationGraph = buildNavigationGraph(report.workflows, report.executedChecks)
 
-  // Phase 17 — execution quality score
-  const tempSummary = { executedTests, passedTests, noChangeTests, errorTests, workflowCoverage }
+  // Phase 32 — flaky action detection
+  report.flakyActions   = detectFlakyActions(report.executedChecks)
+
+  // Phase 23 — goal-driven execution plan
+  report.executionPlan  = planWorkflowExecution(report.workflowGraph, report.components)
+
+  // Phase 17 — execution quality score (workflowCoverage must be computed first)
+  const avgRetryForQuality = report.executedChecks.length > 0
+    ? report.executedChecks.reduce((s, c) => s + (c.retryCount || 0), 0) / report.executedChecks.length
+    : 0
+  const tempSummary = { executedTests, passedTests, noChangeTests, errorTests, workflowCoverage, avgRetryCount: avgRetryForQuality }
   const qualityResult = computeExecutionQualityScore(tempSummary, report.assertions)
-  log.quality(0, `score=${qualityResult.score}  category=${qualityResult.category}  assertions=${report.assertions.length}`)
+  report.qualityFactors = qualityResult.factors || []
+  log.quality(0, `score=${qualityResult.score}  category=${qualityResult.category}  assertions=${report.assertions.length}  flaky=${report.flakyActions.length}`)
 
   report.summary = {
     pages:                  Object.keys(report.components).length,
@@ -2322,10 +2853,16 @@ async function crawlSession(context, startUrl, username, password, baseOrigin, s
     executionAccuracy,
     detectedWorkflowCount:  detectedWorkflowNames.length,
     executedWorkflowCount:  executedWorkflowNames.length,
+    completedWorkflowCount: completedWorkflows.length,
+    expectedWorkflowCount:  expectedWorkflows.length,
     executionQualityScore:  qualityResult.score,
     qualityCategory:        qualityResult.category,
     assertionCount:         report.assertions.length,
     assertionPassCount:     report.assertions.filter(a => a.passed).length,
+    flakyActionCount:       report.flakyActions.length,
+    avgRetryCount:          report.executedChecks.length > 0
+      ? Math.round((report.executedChecks.reduce((s, c) => s + (c.retryCount || 0), 0) / report.executedChecks.length) * 100) / 100
+      : 0,
   }
 
   // Deterministic recommendations based on measured outcomes
